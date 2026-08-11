@@ -222,9 +222,10 @@ def migrate(connection: sqlite3.Connection) -> None:
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (migration.version, _utc_text(datetime.now(UTC))),
             )
-    except BaseException:
-        if connection.in_transaction:
-            connection.rollback()
-        raise
-    else:
         connection.commit()
+    except BaseException as error:
+        try:
+            connection.rollback()
+        except BaseException as rollback_error:  # noqa: BLE001 - keep the primary failure
+            error.add_note(f"rollback also failed: {rollback_error!r}")
+        raise

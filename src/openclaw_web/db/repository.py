@@ -118,12 +118,6 @@ def _canonical_domain(value: str | AnyHttpUrl) -> tuple[AnyHttpUrl, str]:
     else:
         host = f"[{parsed_ip.compressed}]" if parsed_ip.version == 6 else parsed_ip.compressed
 
-    default_port = 80 if url.scheme == "http" else 443
-    if url.port is not None and url.port != default_port:
-        if ":" in host and not host.startswith("["):
-            host = f"[{host}]:{url.port}"
-        else:
-            host = f"{host}:{url.port}"
     return url, host
 
 
@@ -143,12 +137,13 @@ def _immediate_transaction(connection: sqlite3.Connection) -> Iterator[None]:
     connection.execute("BEGIN IMMEDIATE")
     try:
         yield
-    except BaseException:
-        if connection.in_transaction:
-            connection.rollback()
-        raise
-    else:
         connection.commit()
+    except BaseException as error:
+        try:
+            connection.rollback()
+        except BaseException as rollback_error:  # noqa: BLE001 - keep the primary failure
+            error.add_note(f"rollback also failed: {rollback_error!r}")
+        raise
 
 
 def _deserialize(model_type: type[_ModelT], snapshot: str) -> _ModelT:

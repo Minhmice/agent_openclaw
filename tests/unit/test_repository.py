@@ -4,15 +4,21 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, get_ident
+from typing import cast
 
 import pytest
 
 import openclaw_web.db.migrations as migration_module
 from openclaw_web.db.connection import connect as open_connection
 from openclaw_web.db.connection import managed_connection
-from openclaw_web.db.migrations import Migration, migrate
-from openclaw_web.db.repository import Repository, RepositoryConflict
+from openclaw_web.db.migrations import Migration, MigrationError, migrate
+from openclaw_web.db.repository import (
+    Repository,
+    RepositoryConflict,
+    _immediate_transaction,
+)
 from openclaw_web.models import (
+    Candidate,
     CandidateSeed,
     ClaimStatus,
     Confidence,
@@ -47,10 +53,46 @@ _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
 _TEST_THREAD_ID = get_ident()
 
 
+class _FailingConnection(sqlite3.Connection):
+    fail_next_commit = False
+    fail_next_rollback = False
+
+    def commit(self) -> None:
+        if self.fail_next_commit:
+            self.fail_next_commit = False
+            raise sqlite3.OperationalError("injected commit failure")
+        super().commit()
+
+    def rollback(self) -> None:
+        if self.fail_next_rollback:
+            self.fail_next_rollback = False
+            raise sqlite3.OperationalError("injected rollback failure")
+        super().rollback()
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     connection = open_connection(path)
     if get_ident() == _TEST_THREAD_ID:
         _OPEN_CONNECTIONS.append(connection)
+    return connection
+
+
+def _failing_connection(path: Path) -> _FailingConnection:
+    connection = cast(
+        _FailingConnection,
+        sqlite3.connect(
+            path,
+            timeout=5.0,
+            isolation_level=None,
+            factory=_FailingConnection,
+        ),
+    )
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 5000")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA synchronous = NORMAL")
+    _OPEN_CONNECTIONS.append(connection)
     return connection
 
 
@@ -216,6 +258,111 @@ def test_migration_failure_rolls_back_every_statement(
     assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
 
 
+def test_migration_commit_failure_rolls_back_schema_and_connection_is_reusable(
+    tmp_path: Path,
+) -> None:
+    db = _failing_connection(tmp_path / "state.sqlite")
+    db.fail_next_commit = True
+
+    with pytest.raises(sqlite3.OperationalError, match="injected commit failure"):
+        migrate(db)
+
+    assert not db.in_transaction
+    assert db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] == 0
+
+    migrate(db)
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+
+
+def test_migrate_rejects_caller_transaction_without_committing_it(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    db.execute("BEGIN IMMEDIATE")
+    db.execute("CREATE TABLE caller_owned (id INTEGER)")
+
+    with pytest.raises(MigrationError, match="transaction is active"):
+        migrate(db)
+
+    assert db.in_transaction
+    db.rollback()
+    assert db.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'caller_owned'"
+    ).fetchone()[0] == 0
+
+    migrate(db)
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+
+
+def test_deferred_foreign_key_commit_failure_rolls_back_repository_transaction(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    db.execute("PRAGMA defer_foreign_keys = ON")
+
+    with pytest.raises(sqlite3.IntegrityError), _immediate_transaction(db):
+        db.execute(
+            """
+            INSERT INTO candidate_sources (
+                candidate_id, source_url, canonical_domain, source_type, discovered_at,
+                snapshot_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "missing",
+                "https://example.com:8443/source",
+                "example.com",
+                "directory",
+                "2026-08-12T00:00:00.000000Z",
+                "{}",
+            ),
+        )
+
+    assert not db.in_transaction
+    assert db.execute("SELECT COUNT(*) FROM candidate_sources").fetchone()[0] == 0
+
+    candidate = Repository(db).upsert_candidate(
+        "https://example.com:8443/recovered", "Recovered", None
+    )
+    assert candidate.canonical_domain == "example.com"
+
+
+def test_injected_repository_commit_failure_rolls_back_and_connection_is_reusable(
+    tmp_path: Path,
+) -> None:
+    db = _failing_connection(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    db.fail_next_commit = True
+
+    with pytest.raises(sqlite3.OperationalError, match="injected commit failure"):
+        repo.upsert_candidate("https://example.com:8443/failed", "Example", None)
+
+    assert not db.in_transaction
+    assert db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM candidate_sources").fetchone()[0] == 0
+
+    recovered = repo.upsert_candidate("https://example.com:0/recovered", "Example", None)
+    assert recovered.canonical_domain == "example.com"
+
+
+def test_rollback_failure_does_not_mask_commit_failure(tmp_path: Path) -> None:
+    db = _failing_connection(tmp_path / "state.sqlite")
+    db.fail_next_commit = True
+    db.fail_next_rollback = True
+
+    with (
+        pytest.raises(sqlite3.OperationalError, match="injected commit failure") as raised,
+        _immediate_transaction(db),
+    ):
+        db.execute("CREATE TABLE partial_table (id INTEGER)")
+
+    assert any(
+        "injected rollback failure" in note
+        for note in getattr(raised.value, "__notes__", ())
+    )
+    db.rollback()
+
+
 def test_candidate_domain_is_deduplicated(tmp_path: Path) -> None:
     db = connect(tmp_path / "state.sqlite")
     migrate(db)
@@ -232,6 +379,7 @@ def test_candidate_domain_is_deduplicated(tmp_path: Path) -> None:
     ("first_url", "second_url", "canonical_domain"),
     [
         ("https://WWW.Example.COM.:443/a", "https://example.com/b", "example.com"),
+        ("https://example.com:8443/a", "https://example.com:0/b", "example.com"),
         ("http://shop.example.co.uk:80", "https://blog.example.co.uk", "example.co.uk"),
         ("https://bücher.de", "https://xn--bcher-kva.de/", "xn--bcher-kva.de"),
     ],
@@ -251,6 +399,35 @@ def test_domain_normalization_deduplicates_safe_registrable_domains(
 
     assert first.candidate_id == second.candidate_id
     assert first.canonical_domain == canonical_domain
+
+
+def test_domain_deduplication_preserves_full_source_urls(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    first_url = "https://example.com:8443/a?source=one"
+    second_url = "https://example.com:0/b?source=two"
+
+    first = repo.upsert_candidate(first_url, "Example", None)
+    second = repo.upsert_candidate(second_url, "Example", None)
+
+    assert first.candidate_id == second.candidate_id
+    assert str(first.website_url) == first_url
+    assert [str(source_url) for source_url in first.source_urls] == [first_url]
+    snapshot = Candidate.model_validate_json(
+        db.execute(
+            "SELECT snapshot_json FROM candidates WHERE candidate_id = ?",
+            (first.candidate_id,),
+        ).fetchone()[0]
+    )
+    assert str(snapshot.website_url) == first_url
+    assert [str(source_url) for source_url in snapshot.source_urls] == [first_url]
+    assert [
+        row["source_url"]
+        for row in db.execute(
+            "SELECT source_url FROM candidate_sources ORDER BY source_url"
+        ).fetchall()
+    ] == sorted([first_url, second_url])
 
 
 def test_distinct_domains_remain_distinct(tmp_path: Path) -> None:
