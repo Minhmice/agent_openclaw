@@ -1,0 +1,19 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+
+# SSH keys and certificate material
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Local tool/runtime output
+.DS_Store
+Thumbs.db
+*.log
