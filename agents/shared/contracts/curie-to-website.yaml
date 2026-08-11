@@ -1,0 +1,36 @@
+version: 1
+name: curie-to-website
+description: Minh-approved Curie lead handoff to the Website Brief Agent.
+required:
+  approval:
+    approved: true
+    approved_by: "620891893659598850"
+    approved_at: "ISO-8601"
+  website_url: "https://example.com"
+  lead:
+    project_id: "stable-slug"
+    business_name: "string"
+    industry: "string"
+    target_market: "string"
+    why_business_is_good: "string"
+    why_website_is_weak: "string"
+    money_opportunity: "string"
+    top_issues:
+      - "string"
+    evidence_urls:
+      - "https://example.com/source"
+optional:
+  preferred_language: "vi"
+  competitor_urls:
+    - "https://competitor.example"
+  reference_urls:
+    - "https://reference.example"
+  redesign_idea: "string"
+  contact_information: "string"
+  confidence_gaps:
+    - "string"
+rules:
+  - Curie must not mark approval true without Minh's actor ID.
+  - Every factual claim must have an evidence URL or an explicit inferred/estimated label.
+  - The Website Brief Agent independently verifies public claims.
+  - No password, token, private key, cookie, or session data is allowed.

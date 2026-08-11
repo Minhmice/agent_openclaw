@@ -1,0 +1,51 @@
+version: 1
+name: website-to-pm
+description: Completed Website Brief package handoff to the Checklist/Project-PM Agent.
+required:
+  project:
+    project_id: "stable-slug"
+    business_name: "string"
+    website_url: "https://example.com"
+    approved_by: "620891893659598850"
+    approved_at: "ISO-8601"
+  artifacts:
+    redesign_brief: "path/to/redesign-brief.json"
+    design_genome: "path/to/design-genome.json"
+    design_tokens: "path/to/design-tokens.json"
+    component_system: "path/to/component-system.json"
+    page_blueprints: "path/to/page-blueprints.json"
+    design_doc: "path/to/DESIGN.md"
+  pages:
+    - slug: "homepage"
+      role: "conversion"
+      audience: "string"
+      goal: "string"
+      primary_conversion: "string"
+      primary_cta: "string"
+      target_day: 1
+      dependencies: []
+      sections:
+        - order: 1
+          type: "hero"
+          purpose: "string"
+          content: "string"
+          layout: "string"
+          visual_emphasis: "string"
+          cta: "string"
+          proof: []
+          component: "string"
+          image_direction: "string"
+          responsive_notes: "string"
+optional:
+  supporting_artifacts:
+    - "website-analysis.json"
+    - "content-inventory.json"
+    - "visual-inventory.json"
+    - "design-audit.json"
+    - "competitive-positioning.json"
+  evidence_gaps:
+    - "string"
+rules:
+  - PM must not start a project from a URL alone.
+  - Every page needs a role, audience, conversion intent, sections, owner, target day, and evidence/claim status.
+  - No page becomes approved with unsupported claims or unresolved P0/P1 issues.
