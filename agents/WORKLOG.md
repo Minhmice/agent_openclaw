@@ -217,6 +217,26 @@ When Minh writes a Vietnamese message such as `oke thử cho tìm một con khá
 - Wrote [Discord checklist research](../docs/research/2026-08-11-discord-checklist-openclaw.md). Recommended rollout: deterministic check-task state first, native button test second, permanent typed-command fallback.
 - Recommended semantics: each tick completes one task; all ticks produce `checklist-complete`; `offer-ready` still requires page approvals and final confirmations unless Minh explicitly overrides.
 
+## 2026-08-11 — End-to-end workflow audit and shared quality gates
+
+### Live audit
+
+- Gateway/Discord healthy: `openclaw health` OK, Discord connected, event loop non-degraded.
+- Reminder cron healthy: fixed `command` payload, `agentId: null`, enabled, last run OK.
+- Durable task audit: zero stale/failed/lost background tasks.
+- Removed one leftover synthetic project from remote workflow state; real projects were preserved.
+- Real projects currently remain in `review` until Minh acts; no coding agent was created.
+
+### Improvements
+
+- Added 120-minute reminder cooldown keyed by stable project/status/checklist/link signature; unchanged reminders are skipped, changed state sends immediately.
+- Added shared [QUALITY-GATES.md](shared/QUALITY-GATES.md) for Curie, Website Brief, PM, and main coordinator.
+- Uploaded the coordinator/script/contracts to remote after each change.
+
+### Research conclusion
+
+- Current agent workflow is ready for another hardening pass and later coding-agent integration, but native Discord checklist buttons should be rolled out as a separate controlled phase with typed-command fallback retained.
+
 ## 2026-08-11 — Track discovery messages and support safe discard
 
 ### User request

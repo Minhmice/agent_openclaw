@@ -124,6 +124,25 @@ class WorkflowCoordinatorTests(unittest.TestCase):
         self.assertIn("Hoàn thiện hero và CTA", message)
         self.assertIn("/page-status acme-demo homepage", message)
 
+    def test_reminder_signature_ignores_last_update_timestamp(self):
+        project = {"project_id": "acme-demo", "status": "review", "last_update": "old"}
+        pending = [{"slug": "homepage", "status": "todo", "next_action": "Write copy"}]
+        first = coordinator.reminder_signature(project, pending)
+        project["last_update"] = "new"
+        self.assertEqual(first, coordinator.reminder_signature(project, pending))
+
+    def test_recent_unchanged_reminder_is_suppressed(self):
+        project = {
+            "project_id": "acme-demo",
+            "status": "review",
+            "reminder_state": {
+                "signature": "same",
+                "last_sent_at": coordinator.now(),
+            },
+        }
+        self.assertFalse(coordinator.should_send_reminder(project, "same", 120))
+        self.assertTrue(coordinator.should_send_reminder(project, "changed", 120))
+
     def test_discord_message_url_uses_guild_channel_and_message_ids(self):
         url = coordinator.discord_message_url("1536658476288450630", "1536692489602338917")
         self.assertEqual(

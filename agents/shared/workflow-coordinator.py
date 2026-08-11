@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -456,6 +457,33 @@ def format_reminder(project: dict[str, Any], pending_pages: list[dict[str, Any]]
     return "\n".join(lines)[:1900]
 
 
+def reminder_signature(project: dict[str, Any], pending_pages: list[dict[str, Any]]) -> str:
+    stable = {
+        "project_id": project.get("project_id"),
+        "status": project.get("status"),
+        "pending_pages": pending_pages,
+        "review_message_url": (project.get("message_tracking") or {}).get("review_message_url"),
+    }
+    encoded = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def should_send_reminder(project: dict[str, Any], signature: str, cooldown_minutes: int) -> bool:
+    state = project.get("reminder_state") or {}
+    if state.get("signature") != signature:
+        return True
+    last_sent = state.get("last_sent_at")
+    if not last_sent:
+        return True
+    try:
+        last_at = dt.datetime.fromisoformat(last_sent)
+        if last_at.tzinfo is None:
+            last_at = last_at.replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        return True
+    return dt.datetime.now(dt.timezone.utc) - last_at >= dt.timedelta(minutes=cooldown_minutes)
+
+
 def cmd_due(args: argparse.Namespace) -> None:
     print(json.dumps(collect_due(args.stale_minutes), ensure_ascii=False, indent=2))
 
@@ -466,12 +494,19 @@ def cmd_reminder_dispatch(args: argparse.Namespace) -> None:
         print("NO_REMINDERS")
         return
     failures = 0
+    sent = 0
+    skipped = 0
     for item in reminders:
         project = load(item["project_id"])
+        signature = reminder_signature(project, item["pending_pages"])
+        if not should_send_reminder(project, signature, args.cooldown_minutes):
+            skipped += 1
+            continue
         message = format_reminder(project, item["pending_pages"])
         if args.dry_run:
             print(message)
             print("\n---")
+            sent += 1
             continue
         result = subprocess.run(
             [
@@ -495,10 +530,17 @@ def cmd_reminder_dispatch(args: argparse.Namespace) -> None:
             failures += 1
             log("reminder-send-error", item["project_id"], result.stderr.strip()[:400])
         else:
+            project["reminder_state"] = {
+                "signature": signature,
+                "last_sent_at": now(),
+                "channel": TASK_CHANNEL,
+            }
+            atomic_write(project_path(project["project_id"]), project)
             log("reminder-sent", item["project_id"], f"channel={TASK_CHANNEL}")
+            sent += 1
     if failures:
         raise SystemExit(f"reminder dispatch failed for {failures} project(s)")
-    print(f"REMINDERS_SENT={len(reminders)}")
+    print(f"REMINDERS_SENT={sent} SKIPPED_UNCHANGED={skipped}")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -567,6 +609,7 @@ def parser() -> argparse.ArgumentParser:
     due.set_defaults(func=cmd_due)
     dispatch = sub.add_parser("reminder-dispatch")
     dispatch.add_argument("--stale-minutes", type=int, default=30)
+    dispatch.add_argument("--cooldown-minutes", type=int, default=120)
     dispatch.add_argument("--dry-run", action="store_true")
     dispatch.set_defaults(func=cmd_reminder_dispatch)
     return root
