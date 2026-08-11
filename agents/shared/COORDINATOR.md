@@ -41,8 +41,9 @@ Follow [curie-handoff.md](contracts/curie-handoff.md) and [curie-report.md](cont
 1. When spawning Curie, omit `cleanup` or use `cleanup: "keep"`; do not use `cleanup: "delete"` for this workflow. A cleanup/archive error must not discard a valid Curie result or stop delivery.
 2. `sessions_spawn` is non-blocking. After spawning, use `sessions_yield` so the completion event returns to `main`; do not poll sessions in a loop.
 3. When Curie completes, `main` must synthesize the result and explicitly send the compact Vietnamese dossier to `shit-that-could-cooking` (`1536658476288450630`) using the message tool. Attach up to 5 public first-party image URLs when present; otherwise include the image inventory links and explain the limitation.
-4. Only after the review post succeeds, send a Vietnamese acknowledgment to `discuss` (`1533645084229369996`) saying the candidate was found and is waiting in `shit-that-could-cooking`. Include the `project_id` and review channel, but do not say it was approved.
-5. If the child completion arrives with a cleanup error, treat the completion payload as usable, log the cleanup error, and continue the two-message handoff. If delivery fails, retry once and then report the exact failure in `discuss`.
+4. Send an immediate Vietnamese progress message to `discuss` and record its bot message ID. Only after the review post succeeds, send a Vietnamese acknowledgment to `discuss` (`1533645084229369996`) saying the candidate was found and is waiting in `shit-that-could-cooking`; include the direct Discord message link and `project_id`, but do not say it was approved.
+5. After every Discord send, record bot-owned message IDs with `workflow-coordinator.py record-messages`. If the child completion arrives with a cleanup error, treat the completion payload as usable, log the cleanup error, and continue the handoff. If delivery fails, retry once and then report the exact failure in `discuss`.
+6. For Minh's discard intent, resolve the project and run `workflow-coordinator.py discard <project_id> --actor 620891893659598850`. This command deletes only tracked bot messages, marks the project `rejected`, and prevents future reminders. Never delete the user's original command.
 
 ## Routing rules
 

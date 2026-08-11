@@ -202,3 +202,42 @@ When Minh writes a Vietnamese message such as `oke thử cho tìm một con khá
 - Manual cron execution returned `status: ok`, `summary: REMINDERS_SENT=1`, `exitCode: 0`, with no model/agent execution.
 - Task channel received formatted message ID `1536691948587327592`.
 - Old heredoc failure remains only as historical message/run history; future cron runs use the command payload.
+
+## 2026-08-11 — Track discovery messages and support safe discard
+
+### User request
+
+- On a new-lead request in `discuss`, show an immediate “đang tìm” message, then return “đã tìm được” with a direct link to the review message in `shit-that-could-cooking`.
+- When Minh says “bỏ thằng này đi” or equivalent, delete the tracked bot messages for that candidate.
+
+### Design
+
+- Added guild-aware Discord message links using guild `1446612692910739637`.
+- Track only bot-owned IDs in `project.json`: search-started message in `discuss`, completion acknowledgment in `discuss`, and review dossier message in `shit-that-could-cooking`.
+- Added `record-messages` and `discard` coordinator commands. `discard` is Minh-only, marks the project `rejected`, deletes only tracked bot messages, records failures, and never deletes the user's original command.
+- Expanded the natural-language discuss contract with progress, completion-link, and discard behavior.
+
+### Verification
+
+- Added message URL/tracking tests; local suite now passes `7/7`.
+- No real candidate messages were deleted during this implementation session.
+
+### Follow-up detail
+
+- Review posts may be split into multiple Discord messages. Tracking now stores `review_message_ids` and discard deletes all tracked review parts, while the acknowledgment link points to the first part.
+- The Pebsteel message ID supplied by Minh was verified as a review post; its evidence continuation is a second message, so future tracking must preserve both IDs.
+
+## 2026-08-11 — Discovery progress, direct-link acknowledgment, and safe discard
+
+### Work performed
+
+- Added immediate progress-message tracking for new Curie searches in `discuss`.
+- Added direct Discord message-link generation using guild `1446612692910739637`.
+- Added completion acknowledgment requirements: post to `shit-that-could-cooking`, then reply in `discuss` with the first review message link and project ID.
+- Added safe discard lifecycle: Minh-only `discard` resolves tracked bot messages, deletes review/progress/ack parts, marks the project `rejected`, and never deletes the original user message.
+- Backfilled Pebsteel review parts `1536692489602338917` and `1536692493138264084` into tracking without deleting them.
+
+### Verification
+
+- Synthetic remote `record-messages` + `discard --dry-run` passed; project state stayed unchanged during dry-run.
+- Main lifecycle smoke-test confirmed progress reply, first-part review link, split-message tracking, and original-user-message protection.

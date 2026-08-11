@@ -15,7 +15,7 @@
 ## Delivery
 
 1. Write/verify the project record in `review`.
-2. Send the compact dossier to `shit-that-could-cooking` (`1536658476288450630`). Attach up to five public first-party image URLs when available.
+2. Send the compact dossier to `shit-that-could-cooking` (`1536658476288450630`). Attach up to five public first-party image URLs when available. Record every message ID returned by Discord, including split-message parts.
 3. After the review send succeeds, send a Vietnamese acknowledgment to `discuss` (`1533645084229369996`) with the project ID and review location.
 4. Retry one failed send; if it still fails, report the exact failure in `discuss` and keep the project in `review`.
 

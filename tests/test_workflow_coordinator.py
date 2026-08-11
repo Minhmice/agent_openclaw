@@ -120,6 +120,43 @@ class WorkflowCoordinatorTests(unittest.TestCase):
         self.assertIn("Hoàn thiện hero và CTA", message)
         self.assertIn("/page-status acme-demo homepage", message)
 
+    def test_discord_message_url_uses_guild_channel_and_message_ids(self):
+        url = coordinator.discord_message_url("1536658476288450630", "1536692489602338917")
+        self.assertEqual(
+            url,
+            "https://discord.com/channels/1446612692910739637/1536658476288450630/1536692489602338917",
+        )
+
+    def test_message_tracking_payload_contains_only_bot_message_targets(self):
+        tracking = coordinator.message_tracking_payload(
+            discuss_ack_message_id="100",
+            review_message_id="200",
+            search_started_message_id="300",
+        )
+        self.assertEqual(tracking["discuss_ack_message_id"], "100")
+        self.assertEqual(tracking["review_message_id"], "200")
+        self.assertEqual(tracking["review_message_ids"], ["200"])
+        self.assertEqual(tracking["search_started_message_id"], "300")
+        self.assertEqual(tracking["review_message_url"], coordinator.discord_message_url("1536658476288450630", "200"))
+
+    def test_discard_dry_run_does_not_change_project_state(self):
+        self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)
+        self.assertEqual(
+            self.run_cmd(
+                "record-messages",
+                "acme-demo",
+                "--actor",
+                MINH,
+                "--discuss-ack-message-id",
+                "100",
+                "--review-message-id",
+                "200",
+            ).returncode,
+            0,
+        )
+        self.assertEqual(self.run_cmd("discard", "acme-demo", "--actor", MINH, "--dry-run").returncode, 0)
+        self.assertEqual(self.load_project()["status"], "review")
+
 
 if __name__ == "__main__":
     unittest.main()

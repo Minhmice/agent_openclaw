@@ -20,6 +20,8 @@ STATE = ROOT / "state"
 WORKLOG = ROOT / "WORKLOG.md"
 MINH_ID = "620891893659598850"
 WIEN_ID = "859783610625556480"
+GUILD_ID = "1446612692910739637"
+DISCUSS_CHANNEL = "1533645084229369996"
 REVIEW_CHANNEL = "1536658476288450630"
 TASK_CHANNEL = "1533643473486348458"
 OFFER_CHANNEL = "1536659097649422356"
@@ -102,6 +104,30 @@ def save(project: dict[str, Any]) -> None:
 def require_actor(actor: str, allowed: set[str]) -> None:
     if actor not in allowed:
         raise PermissionError("actor is not authorized for this command")
+
+
+def discord_message_url(channel_id: str, message_id: str) -> str:
+    return f"https://discord.com/channels/{GUILD_ID}/{channel_id}/{message_id}"
+
+
+def message_tracking_payload(
+    *,
+    discuss_ack_message_id: str = "",
+    review_message_id: str | list[str] = "",
+    search_started_message_id: str = "",
+) -> dict[str, Any]:
+    review_ids = [review_message_id] if isinstance(review_message_id, str) else list(review_message_id)
+    review_ids = [str(message_id) for message_id in review_ids if message_id]
+    primary_review_id = review_ids[0] if review_ids else ""
+    payload = {
+        "discuss_ack_message_id": discuss_ack_message_id,
+        "review_message_id": primary_review_id,
+        "review_message_ids": review_ids,
+        "search_started_message_id": search_started_message_id,
+    }
+    if primary_review_id:
+        payload["review_message_url"] = discord_message_url(REVIEW_CHANNEL, primary_review_id)
+    return payload
 
 
 def find_page(project: dict[str, Any], page_slug: str) -> dict[str, Any]:
@@ -287,6 +313,75 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(json.dumps(load(args.project_id), ensure_ascii=False, indent=2))
 
 
+def cmd_record_messages(args: argparse.Namespace) -> None:
+    require_actor(args.actor, {MINH_ID})
+    project = load(args.project_id)
+    tracking = project.setdefault("message_tracking", {})
+    tracking.update(
+        message_tracking_payload(
+            discuss_ack_message_id=args.discuss_ack_message_id,
+            review_message_id=args.review_message_id,
+            search_started_message_id=args.search_started_message_id,
+        )
+    )
+    save(project)
+    log("discovery-messages-recorded", project["project_id"], "bot-owned message IDs recorded")
+    print(json.dumps(tracking, ensure_ascii=False, indent=2))
+
+
+def cmd_discard(args: argparse.Namespace) -> None:
+    require_actor(args.actor, {MINH_ID})
+    project = load(args.project_id)
+    tracking = project.setdefault("message_tracking", {})
+    review_message_ids = tracking.get("review_message_ids") or [tracking.get("review_message_id")]
+    targets = [
+        (DISCUSS_CHANNEL, tracking.get("search_started_message_id")),
+        (DISCUSS_CHANNEL, tracking.get("discuss_ack_message_id")),
+    ] + [(REVIEW_CHANNEL, message_id) for message_id in review_message_ids]
+    deleted: list[str] = []
+    failures: list[str] = []
+    if args.dry_run:
+        print(json.dumps({"project_id": args.project_id, "status": project.get("status"), "would_delete": [message_id for _, message_id in targets if message_id]}, ensure_ascii=False, indent=2))
+        return
+    if not args.dry_run:
+        for channel_id, message_id in targets:
+            if not message_id:
+                continue
+            result = subprocess.run(
+                [
+                    "openclaw",
+                    "message",
+                    "delete",
+                    "--channel",
+                    "discord",
+                    "--target",
+                    f"channel:{channel_id}",
+                    "--message-id",
+                    str(message_id),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if result.returncode == 0:
+                deleted.append(str(message_id))
+            else:
+                failures.append(f"{channel_id}/{message_id}: {result.stderr.strip()[:300]}")
+    project["status"] = "rejected"
+    project["discarded_by"] = args.actor
+    project["discarded_at"] = now()
+    project["discard_reason"] = args.reason.strip() or "Minh yêu cầu bỏ candidate"
+    tracking["deleted_message_ids"] = deleted
+    tracking["delete_failures"] = failures
+    save(project)
+    log("project-discarded", project["project_id"], f"actor={args.actor} deleted={len(deleted)} failures={len(failures)}")
+    print(json.dumps({"project": project, "deleted_message_ids": deleted, "delete_failures": failures}, ensure_ascii=False, indent=2))
+    if failures:
+        raise SystemExit(f"message deletion failed for {len(failures)} message(s)")
+
+
 def collect_due(stale_minutes: int) -> list[dict[str, Any]]:
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=stale_minutes)
     due: list[dict[str, Any]] = []
@@ -449,6 +544,19 @@ def parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status")
     status.add_argument("project_id")
     status.set_defaults(func=cmd_status)
+    record_messages = sub.add_parser("record-messages")
+    record_messages.add_argument("project_id")
+    record_messages.add_argument("--actor", required=True)
+    record_messages.add_argument("--discuss-ack-message-id", default="")
+    record_messages.add_argument("--review-message-id", action="append", default=[])
+    record_messages.add_argument("--search-started-message-id", default="")
+    record_messages.set_defaults(func=cmd_record_messages)
+    discard = sub.add_parser("discard")
+    discard.add_argument("project_id")
+    discard.add_argument("--actor", required=True)
+    discard.add_argument("--reason", default="Minh yêu cầu bỏ candidate")
+    discard.add_argument("--dry-run", action="store_true")
+    discard.set_defaults(func=cmd_discard)
     due = sub.add_parser("due-reminders")
     due.add_argument("--stale-minutes", type=int, default=30)
     due.set_defaults(func=cmd_due)
