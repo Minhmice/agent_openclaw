@@ -12,6 +12,7 @@ The `main` agent is the Discord-facing coordinator. It does not replace Curie, W
 review: 1536658476288450630
 task: 1533643473486348458
 offer-ready: 1536659097649422356
+discuss: 1533645084229369996
 ```
 
 ## Actor map
@@ -28,6 +29,10 @@ curie         discovery/business lead mining
 website-brief approved website extraction + redesign package
 project-pm    page checklist, schedule, reminders, final handoff
 ```
+
+## Natural-language discovery trigger in `discuss`
+
+Read [discuss-intents.md](contracts/discuss-intents.md). When Minh (`620891893659598850`) writes a clear Vietnamese request in `discuss` (`1533645084229369996`) such as `oke thử cho tìm một con khác đi`, classify it as `new-curie-discovery`. Acknowledge in Vietnamese, start exactly one isolated Curie run for one fresh candidate, avoid active/review project duplicates, create the result in `review`, and post it to `1536658476288450630`. This trigger never approves a lead and never starts Website Brief or Project PM. If the message is ambiguous, ask Minh to clarify.
 
 ## Routing rules
 

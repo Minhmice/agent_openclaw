@@ -140,3 +140,23 @@ The plan is being executed inline after Minh explicitly approved the complete wo
 - `project-pm`: replied `Mình vừa khởi động và sẵn sàng giao tiếp bằng tiếng Việt.`
 - No downstream project state or Discord message was changed by the smoke test.
 - Evidence limitations are recorded: no visual screenshot audit, no analytics/performance data, no conversion data, and some public fetches were truncated by tool/rate limits.
+
+## 2026-08-11 — Natural-language Curie trigger from `discuss`
+
+### User request
+
+When Minh writes a Vietnamese message such as `oke thử cho tìm một con khác đi` in `discuss`, Curie should find one fresh business candidate.
+
+### Design
+
+- Scope the trigger to `discuss` channel `1533645084229369996` and Minh actor `620891893659598850`.
+- Match a clear affirmative/request cue plus a fresh-target cue; tolerate case, punctuation, and ordinary spacing differences.
+- Start exactly one isolated Curie run, exclude active/review project duplicates, create the result in `review`, and post it to review channel `1536658476288450630`.
+- Never auto-approve and never invoke Website Brief or Project PM from this natural-language trigger.
+- If the message is ambiguous, ask Minh to clarify. If Curie cannot produce a defensible lead, report no result rather than creating a fake project.
+
+### Contract and verification
+
+- Added [discuss-intents.md](shared/contracts/discuss-intents.md) and updated coordinator instructions in local and remote main workspaces.
+- Smoke-tested the simulated event with `main`: it classified `new-curie-discovery`, routed exactly one isolated Curie run, kept the candidate unapproved, skipped Website Brief/PM, and targeted review channel `1536658476288450630`.
+- The smoke test did not call Curie, write project state, or send Discord.

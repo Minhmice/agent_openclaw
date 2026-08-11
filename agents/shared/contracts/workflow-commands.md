@@ -55,3 +55,7 @@ planned
 ## Reminder rule
 
 The reminder job runs every 30 minutes but only sends when an active page has a missing next action, a blocker, or a stale update. It must include project, page, owner, exact missing checklist items, next action, and last update time.
+
+## Natural-language discovery
+
+The Vietnamese intent contract for `discuss` is [discuss-intents.md](discuss-intents.md). It is not an approval command; it only requests one fresh Curie discovery run and leaves the resulting project in `review`.
