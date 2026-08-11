@@ -35,6 +35,7 @@ from openclaw_web.models import (
 )
 
 _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
+_WEB_URL_SCHEME_PATTERN = r"^[Hh][Tt][Tt][Pp][Ss]?://"
 _SCHEMA_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
     ("artifact_envelope.json", ArtifactEnvelope),
     ("audit_record.json", AuditRecord),
@@ -277,9 +278,21 @@ def _add_nonblank_patterns(node: Any) -> None:
             _add_nonblank_patterns(value)
 
 
+def _add_web_url_patterns(node: Any) -> None:
+    if isinstance(node, dict):
+        if node.get("format") == "uri":
+            node["pattern"] = _WEB_URL_SCHEME_PATTERN
+        for value in node.values():
+            _add_web_url_patterns(value)
+    elif isinstance(node, list):
+        for value in node:
+            _add_web_url_patterns(value)
+
+
 def _schema_document(model: type[BaseModel]) -> dict[str, Any]:
     schema = model.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    _add_web_url_patterns(schema)
     _add_nonblank_patterns(schema)
 
     if model is Evidence:

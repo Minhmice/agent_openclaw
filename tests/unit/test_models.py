@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,90 @@ def _score_payload(**overrides: Any) -> dict[str, Any]:
     }
     payload.update(overrides)
     return payload
+
+
+URL_FIELD_CASES = (
+    ("candidate-seed-url", CandidateSeed, "candidate_seed.json"),
+    ("candidate-seed-source-url", CandidateSeed, "candidate_seed.json"),
+    ("candidate-website-url", Candidate, "candidate.json"),
+    ("candidate-source-urls", Candidate, "candidate.json"),
+    ("page-record-page-url", PageRecord, "page_record.json"),
+    ("evidence-page-url", Evidence, "evidence.json"),
+    ("evidence-evidence-urls", Evidence, "evidence.json"),
+    ("issue-record-page-url", IssueRecord, "issue_record.json"),
+    ("delivery-record-message-url", DeliveryRecord, "delivery_record.json"),
+)
+
+
+def _url_field_payload(case_id: str, url: str) -> dict[str, Any]:
+    payloads: dict[str, dict[str, Any]] = {
+        "candidate-seed-url": {
+            "url": url,
+            "business_name": "Example",
+            "source_url": "https://directory.example/company",
+            "source_type": "public-listing",
+            "discovered_at": "2026-08-12T00:00:00Z",
+        },
+        "candidate-seed-source-url": {
+            "url": "https://example.com/",
+            "business_name": "Example",
+            "source_url": url,
+            "source_type": "public-listing",
+            "discovered_at": "2026-08-12T00:00:00Z",
+        },
+        "candidate-website-url": {
+            "candidate_id": "candidate-1",
+            "name": "Example",
+            "website_url": url,
+        },
+        "candidate-source-urls": {
+            "candidate_id": "candidate-1",
+            "name": "Example",
+            "source_urls": [url],
+        },
+        "page-record-page-url": {
+            "page_id": "page-1",
+            "candidate_id": "candidate-1",
+            "page_url": url,
+            "page_type": "home",
+        },
+        "evidence-page-url": {
+            **_evidence_payload(
+                captured_at="2026-08-12T00:00:00Z",
+                claim_status="observed",
+                confidence="medium",
+            ),
+            "page_url": url,
+        },
+        "evidence-evidence-urls": {
+            **_evidence_payload(
+                captured_at="2026-08-12T00:00:00Z",
+                claim_status="observed",
+                confidence="medium",
+            ),
+            "evidence_urls": [url],
+        },
+        "issue-record-page-url": {
+            "issue_id": "issue-1",
+            "candidate_id": "candidate-1",
+            "title": "Missing heading",
+            "severity": "P2",
+            "evidence_ids": ["ev-1"],
+            "recommendation_vi": "Them tieu de.",
+            "page_url": url,
+        },
+        "delivery-record-message-url": {
+            "delivery_id": "delivery-1",
+            "event_type": "review-ready",
+            "project_id": "project-1",
+            "channel_id": "channel-1",
+            "payload_path": "artifacts/project-1.json",
+            "idempotency_key": "review-ready:project-1",
+            "status": "sent",
+            "message_url": url,
+        },
+    }
+    return payloads[case_id]
 
 
 def test_inferred_evidence_requires_source_or_explicit_gap() -> None:
@@ -636,6 +721,51 @@ def test_generated_schemas_declare_draft_2020_12_and_are_valid(tmp_path: Path) -
         schema = __import__("json").loads(path.read_text(encoding="utf-8"))
         assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
         Draft202012Validator.check_schema(schema)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_acceptance"),
+    [
+        pytest.param("http://example.com/path", True, id="http"),
+        pytest.param("https://example.com/path", True, id="https"),
+        pytest.param("HTTP://example.com/path", True, id="uppercase-http"),
+        pytest.param("hTtPs://example.com/path", True, id="mixed-case-https"),
+        pytest.param("ftp://example.com/path", False, id="ftp"),
+        pytest.param("file:///tmp/page", False, id="file"),
+        pytest.param("mailto:owner@example.com", False, id="mailto"),
+    ],
+)
+def test_exported_url_schemas_match_pydantic_web_scheme_validation(
+    tmp_path: Path,
+    url: str,
+    expected_acceptance: bool,
+) -> None:
+    output_dir = tmp_path / "schemas"
+    export_schemas(output_dir)
+    schemas = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in output_dir.glob("*.json")
+    }
+
+    for case_id, model, filename in URL_FIELD_CASES:
+        payload = _url_field_payload(case_id, url)
+        try:
+            model.model_validate_json(json.dumps(payload))
+        except ValidationError:
+            pydantic_accepts = False
+        else:
+            pydantic_accepts = True
+
+        schema_accepts = not list(
+            Draft202012Validator(
+                schemas[filename],
+                format_checker=FormatChecker(),
+            ).iter_errors(payload)
+        )
+
+        assert pydantic_accepts is expected_acceptance, case_id
+        assert schema_accepts is expected_acceptance, case_id
+        assert schema_accepts is pydantic_accepts, case_id
 
 
 @pytest.mark.parametrize(
