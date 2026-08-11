@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import ntpath
 import os
 import shutil
 import tempfile
@@ -467,6 +468,57 @@ def _publish_over_existing(output_dir: Path, staging_dir: Path, backup_dir: Path
     _fsync_directory(output_dir.parent)
 
 
+def _validate_schema_documents(documents: object) -> dict[str, bytes]:
+    if not isinstance(documents, Mapping):
+        raise TypeError("schema documents must be a mapping")
+
+    validated: dict[str, bytes] = {}
+    case_insensitive_names: set[str] = set()
+    for filename, schema_bytes in documents.items():
+        if not isinstance(filename, str):
+            raise TypeError("schema document filename must be a string")
+        drive, _ = ntpath.splitdrive(filename)
+        if (
+            not filename
+            or filename in {".", ".."}
+            or filename == ".json"
+            or "/" in filename
+            or "\\" in filename
+            or bool(drive)
+            or "\0" in filename
+            or not filename.endswith(".json")
+        ):
+            raise ValueError(
+                "schema document filename must be a nonempty simple lowercase "
+                f".json basename: {filename!r}"
+            )
+
+        case_insensitive_name = ntpath.normcase(filename)
+        if case_insensitive_name in case_insensitive_names:
+            raise ValueError(
+                "schema documents contain a case-insensitive filename collision: "
+                f"{filename!r}"
+            )
+        case_insensitive_names.add(case_insensitive_name)
+
+        if not isinstance(schema_bytes, bytes):
+            raise TypeError("schema document value must be bytes")
+        try:
+            document = json.loads(
+                schema_bytes.decode("utf-8"),
+                parse_constant=_reject_nonstandard_json_constant,
+            )
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(
+                "schema document value must be a valid UTF-8 JSON object"
+            ) from exc
+        if not isinstance(document, dict):
+            raise TypeError("schema document value must be a valid UTF-8 JSON object")
+
+        validated[filename] = schema_bytes
+    return validated
+
+
 def _publish_schema_documents(
     output_dir: Path,
     documents: Mapping[str, bytes] | Callable[[], Mapping[str, bytes]],
@@ -481,10 +533,20 @@ def _publish_schema_documents(
     """
 
     output_dir = Path(output_dir)
+    try:
+        supplied_documents = documents() if callable(documents) else documents
+    except BaseException:
+        # Preserve the recovery contract when document generation itself fails.
+        # An invalid returned mapping is still rejected below before this path
+        # or any other filesystem mutation is reached.
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        with _schema_export_lock(output_dir, timeout=lock_timeout):
+            _recover_schema_publication(output_dir)
+        raise
+    schema_documents = _validate_schema_documents(supplied_documents)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with _schema_export_lock(output_dir, timeout=lock_timeout):
         _recover_schema_publication(output_dir)
-        schema_documents = documents() if callable(documents) else documents
         transaction_id = uuid.uuid4().hex
         staging_dir = Path(
             tempfile.mkdtemp(

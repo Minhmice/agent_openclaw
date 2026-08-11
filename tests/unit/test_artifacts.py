@@ -397,6 +397,160 @@ def test_export_schemas_is_complete_valid_idempotent_and_removes_stale_files(
         assert filename.endswith(".json")
 
 
+def test_schema_publication_rejects_parent_traversal_before_filesystem_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "generated"
+    output_dir.mkdir()
+    sentinel = output_dir / "existing.json"
+    sentinel.write_bytes(b'{"generation":"existing"}')
+    before = {path.name: path.read_bytes() for path in output_dir.iterdir()}
+    escaped = tmp_path / "escape.json"
+    lock_temp = tmp_path / "lock-temp"
+    monkeypatch.setattr(artifacts.tempfile, "gettempdir", lambda: str(lock_temp))
+
+    with pytest.raises(ValueError, match="simple lowercase .json basename"):
+        artifacts._publish_schema_documents(
+            output_dir,
+            lambda: {"../escape.json": b'{"title":"unsafe"}'},
+        )
+
+    assert {path.name: path.read_bytes() for path in output_dir.iterdir()} == before
+    assert not escaped.exists()
+    assert list(tmp_path.glob(".generated.schemas.*")) == []
+    assert not lock_temp.exists()
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "",
+        ".",
+        "..",
+        "schema",
+        "schema.txt",
+        "schema.JSON",
+        "nested/schema.json",
+        r"nested\schema.json",
+        "/absolute/schema.json",
+        r"C:\absolute\schema.json",
+        r"C:drive-qualified.json",
+        r"\\server\share\schema.json",
+    ],
+)
+def test_schema_publication_rejects_unsafe_filenames_before_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+) -> None:
+    output_dir = tmp_path / "generated"
+    lock_temp = tmp_path / "lock-temp"
+    monkeypatch.setattr(artifacts.tempfile, "gettempdir", lambda: str(lock_temp))
+    monkeypatch.setattr(
+        artifacts,
+        "_write_file_durably",
+        lambda _path, _data: pytest.fail("invalid documents reached filesystem writing"),
+    )
+
+    with pytest.raises(ValueError, match="simple lowercase .json basename"):
+        artifacts._publish_schema_documents(
+            output_dir,
+            {filename: b'{"title":"unsafe"}'},
+        )
+
+    assert not output_dir.exists()
+    assert list(tmp_path.glob(".generated.schemas.*")) == []
+    assert not lock_temp.exists()
+
+
+def test_schema_publication_rejects_non_string_filename_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "generated"
+    lock_temp = tmp_path / "lock-temp"
+    monkeypatch.setattr(artifacts.tempfile, "gettempdir", lambda: str(lock_temp))
+
+    with pytest.raises(TypeError, match="schema document filename must be a string"):
+        artifacts._publish_schema_documents(  # type: ignore[arg-type]
+            output_dir,
+            {1: b'{"title":"unsafe"}'},
+        )
+
+    assert not output_dir.exists()
+    assert list(tmp_path.glob(".generated.schemas.*")) == []
+    assert not lock_temp.exists()
+
+
+def test_schema_publication_rejects_case_insensitive_filename_collisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "generated"
+    lock_temp = tmp_path / "lock-temp"
+    monkeypatch.setattr(artifacts.tempfile, "gettempdir", lambda: str(lock_temp))
+
+    with pytest.raises(ValueError, match="case-insensitive filename collision"):
+        artifacts._publish_schema_documents(
+            output_dir,
+            {
+                "A.json": b'{"title":"first"}',
+                "a.json": b'{"title":"second"}',
+            },
+        )
+
+    assert not output_dir.exists()
+    assert list(tmp_path.glob(".generated.schemas.*")) == []
+    assert not lock_temp.exists()
+
+
+@pytest.mark.parametrize(
+    ("schema_bytes", "expected_exception", "message"),
+    [
+        ("{}", TypeError, "schema document value must be bytes"),
+        (b"\xff", ValueError, "valid UTF-8 JSON object"),
+        (b"{", ValueError, "valid UTF-8 JSON object"),
+        (b"[]", TypeError, "valid UTF-8 JSON object"),
+        (b"NaN", ValueError, "valid UTF-8 JSON object"),
+    ],
+)
+def test_schema_publication_validates_all_document_bytes_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schema_bytes: object,
+    expected_exception: type[Exception],
+    message: str,
+) -> None:
+    output_dir = tmp_path / "generated"
+    lock_temp = tmp_path / "lock-temp"
+    monkeypatch.setattr(artifacts.tempfile, "gettempdir", lambda: str(lock_temp))
+
+    with pytest.raises(expected_exception, match=message):
+        artifacts._publish_schema_documents(  # type: ignore[arg-type]
+            output_dir,
+            {
+                "valid.json": b'{"title":"valid"}',
+                "invalid.json": schema_bytes,
+            },
+        )
+
+    assert not output_dir.exists()
+    assert list(tmp_path.glob(".generated.schemas.*")) == []
+    assert not lock_temp.exists()
+
+
+def test_schema_publication_accepts_simple_json_object_documents(tmp_path: Path) -> None:
+    output_dir = tmp_path / "generated"
+    schema_bytes = b'{"title":"Schema"}'
+
+    artifacts._publish_schema_documents(output_dir, {"schema.json": schema_bytes})
+
+    assert {path.name: path.read_bytes() for path in output_dir.iterdir()} == {
+        "schema.json": schema_bytes
+    }
+
+
 def test_changed_schema_generations_are_serialized_and_read_as_complete_snapshots(
     tmp_path: Path,
 ) -> None:
