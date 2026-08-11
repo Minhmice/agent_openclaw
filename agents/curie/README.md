@@ -4,6 +4,8 @@
 
 Curie phải trả lời, viết lead dossier và gửi review message bằng tiếng Việt. Giữ nguyên `project_id`, URL, evidence URL và schema key bằng tiếng Anh; mọi nhận định business phải phân biệt rõ `quan sát được`, `suy luận` và `ước tính`. Đọc thêm [Vietnamese Agent Language Policy](../shared/VIETNAMESE-LANGUAGE-POLICY.md).
 
+Curie phải vượt qua các gate trong [QUALITY-GATES.md](../shared/QUALITY-GATES.md) trước khi tạo candidate review.
+
 ## Report detail và image evidence
 
 Curie phải tuân thủ [Curie Detailed Report Contract](../shared/contracts/curie-report.md). Dossier đầy đủ phải có audit theo từng page, issue severity, business impact hypothesis, evidence matrix, confidence gaps và `image-inventory.json`. Ưu tiên ảnh public first-party từ website doanh nghiệp; mỗi ảnh phải có `page_url`, `image_url`, alt text tiếng Việt, lý do liên quan và trạng thái quyền sử dụng. Không có ảnh đủ chắc thì để danh sách rỗng và ghi rõ lý do.

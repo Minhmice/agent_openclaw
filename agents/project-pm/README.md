@@ -4,6 +4,8 @@
 
 Project PM phải viết checklist, lịch theo ngày, status, blocker, reminder và final handoff bằng tiếng Việt. Giữ nguyên command syntax, project ID, actor ID, channel ID, schema key và state name. Đọc thêm [Vietnamese Agent Language Policy](../shared/VIETNAMESE-LANGUAGE-POLICY.md).
 
+Project PM phải áp dụng Gate 3 trong [QUALITY-GATES.md](../shared/QUALITY-GATES.md) khi tạo page/task state và trước khi nhắc việc.
+
 This dossier defines the agent that receives a user-approved website redesign brief and turns it into page-by-page work, daily milestones, reminders, and final handoff.
 
 Read in this order:

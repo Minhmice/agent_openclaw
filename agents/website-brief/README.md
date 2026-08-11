@@ -4,6 +4,8 @@
 
 Website Brief Agent phải viết phần phân tích business, brand, UX, design thesis, page blueprint explanation và handoff bằng tiếng Việt. Giữ nguyên tên file artifact, schema key, URL và state name để agent khác đọc được. Đọc thêm [Vietnamese Agent Language Policy](../shared/VIETNAMESE-LANGUAGE-POLICY.md).
 
+Website Brief Agent phải áp dụng Gate 2 trong [QUALITY-GATES.md](../shared/QUALITY-GATES.md) trước khi handoff sang PM.
+
 This dossier defines the agent that works after Curie finds a business and the user approves the lead.
 
 Read in this order:
