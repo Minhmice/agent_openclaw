@@ -1,3 +1,4 @@
+import codecs
 import hashlib
 import json
 import multiprocessing
@@ -72,8 +73,9 @@ class _FailingBinaryFile:
         return self._wrapped.fileno()
 
 
-def _schema_export_worker(
+def _schema_generation_worker(
     output_dir: str,
+    documents: dict[str, bytes],
     barrier: Any,
     results: Any,
     iterations: int,
@@ -81,7 +83,7 @@ def _schema_export_worker(
     try:
         barrier.wait(timeout=20)
         for _ in range(iterations):
-            export_schemas(Path(output_dir))
+            artifacts._publish_schema_documents(Path(output_dir), documents)
         results.put(None)
     except Exception as exc:  # noqa: BLE001  # pragma: no cover - sent to parent
         results.put(repr(exc))
@@ -91,6 +93,15 @@ def _schema_lock_holder(output_dir: str, ready: Any, release: Any) -> None:
     with artifacts._schema_export_lock(Path(output_dir), timeout=5.0):
         ready.set()
         release.wait(timeout=20)
+
+
+def _schema_generation_documents(generation: str) -> dict[str, bytes]:
+    documents: dict[str, bytes] = {}
+    for filename, raw in artifacts._schema_documents().items():
+        schema = json.loads(raw)
+        schema["$comment"] = generation
+        documents[filename] = _canonical_json_bytes(schema)
+    return documents
 
 
 def test_artifact_write_round_trips_and_adds_hash(tmp_path: Path) -> None:
@@ -110,6 +121,7 @@ def test_artifact_write_is_canonical_utf8_and_creates_parent_directory(tmp_path:
     atomic_write_artifact(target, "candidate-v1", "generator-v1", "run-1", payload)
 
     raw = target.read_bytes()
+    assert not raw.startswith(codecs.BOM_UTF8)
     assert b"\\u" not in raw
     assert b'"a":[2,1]' in raw
     assert read_artifact(target).payload == payload
@@ -147,11 +159,55 @@ def test_read_artifact_translates_malformed_json_with_cause(tmp_path: Path) -> N
     target = tmp_path / "malformed.json"
     target.write_bytes(b'{"schema_version":')
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ArtifactMalformedError) as caught:
         read_artifact(target)
 
-    assert type(caught.value).__name__ == "ArtifactMalformedError"
     assert isinstance(caught.value.__cause__, json.JSONDecodeError)
+
+
+@pytest.mark.parametrize(
+    ("encoding", "bom"),
+    [
+        ("utf-16-le", codecs.BOM_UTF16_LE),
+        ("utf-16-be", codecs.BOM_UTF16_BE),
+        ("utf-32-le", codecs.BOM_UTF32_LE),
+        ("utf-32-be", codecs.BOM_UTF32_BE),
+    ],
+)
+def test_read_artifact_classifies_non_utf8_json_as_malformed_with_decode_cause(
+    tmp_path: Path,
+    encoding: str,
+    bom: bytes,
+) -> None:
+    target = tmp_path / "non-utf8.json"
+    target.write_bytes(bom + "{}".encode(encoding))
+
+    with pytest.raises(ArtifactMalformedError) as caught:
+        read_artifact(target)
+
+    assert isinstance(caught.value.__cause__, UnicodeDecodeError)
+
+
+def test_read_artifact_rejects_utf8_bom_as_noncanonical_with_cause(tmp_path: Path) -> None:
+    target = tmp_path / "bom.json"
+    target.write_bytes(codecs.BOM_UTF8 + b"{}")
+
+    with pytest.raises(ArtifactMalformedError) as caught:
+        read_artifact(target)
+
+    assert isinstance(caught.value.__cause__, ValueError)
+
+
+def test_read_artifact_classifies_invalid_utf8_as_malformed_with_decode_cause(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "invalid-utf8.json"
+    target.write_bytes(b'{"payload":"\xff"}')
+
+    with pytest.raises(ArtifactMalformedError) as caught:
+        read_artifact(target)
+
+    assert isinstance(caught.value.__cause__, UnicodeDecodeError)
 
 
 @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
@@ -172,10 +228,9 @@ def test_read_artifact_translates_schema_errors_with_cause(tmp_path: Path) -> No
     target = tmp_path / "invalid-envelope.json"
     target.write_text("{}", encoding="utf-8")
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ArtifactSchemaError) as caught:
         read_artifact(target)
 
-    assert type(caught.value).__name__ == "ArtifactSchemaError"
     assert isinstance(caught.value.__cause__, ValidationError)
 
 
@@ -342,35 +397,49 @@ def test_export_schemas_is_complete_valid_idempotent_and_removes_stale_files(
         assert filename.endswith(".json")
 
 
-def test_concurrent_schema_exports_are_serialized_and_never_publish_partial_files(
+def test_changed_schema_generations_are_serialized_and_read_as_complete_snapshots(
     tmp_path: Path,
 ) -> None:
     output_dir = tmp_path / "generated"
-    export_schemas(output_dir)
+    initial_generation = "generation-initial"
+    artifacts._publish_schema_documents(
+        output_dir,
+        _schema_generation_documents(initial_generation),
+    )
     context = multiprocessing.get_context("spawn")
-    worker_count = 4
+    worker_count = 3
+    generations = [f"generation-{index}" for index in range(worker_count)]
+    documents = [_schema_generation_documents(generation) for generation in generations]
     barrier = context.Barrier(worker_count + 1)
     results = context.Queue()
     processes = [
         context.Process(
-            target=_schema_export_worker,
-            args=(str(output_dir), barrier, results, 5),
+            target=_schema_generation_worker,
+            args=(str(output_dir), schema_documents, barrier, results, 4),
         )
-        for _ in range(worker_count)
+        for schema_documents in documents
     ]
     for process in processes:
         process.start()
 
     deadline = time.monotonic() + 30
+    observed_generations = {initial_generation}
     try:
         barrier.wait(timeout=20)
         while any(process.is_alive() for process in processes):
             if time.monotonic() >= deadline:
-                pytest.fail("concurrent schema export exceeded its 30-second deadline")
-            visible = list(output_dir.glob("*.json")) if output_dir.exists() else []
-            assert {path.name for path in visible} == EXPECTED_SCHEMA_FILES
-            for path in visible:
-                json.loads(path.read_bytes())
+                pytest.fail("changed-generation publication exceeded its 30-second deadline")
+            with artifacts._schema_export_lock(output_dir, timeout=10.0):
+                visible = {
+                    path.name: json.loads(path.read_bytes())
+                    for path in output_dir.glob("*.json")
+                }
+            assert set(visible) == EXPECTED_SCHEMA_FILES
+            snapshot_generations = {
+                schema.get("$comment") for schema in visible.values()
+            }
+            assert len(snapshot_generations) == 1
+            observed_generations.update(snapshot_generations)
     finally:
         for process in processes:
             process.join(timeout=1)
@@ -380,6 +449,17 @@ def test_concurrent_schema_exports_are_serialized_and_never_publish_partial_file
 
     assert all(process.exitcode == 0 for process in processes)
     assert [results.get(timeout=5) for _ in processes] == [None] * worker_count
+    with artifacts._schema_export_lock(output_dir, timeout=10.0):
+        final_visible = {
+            path.name: json.loads(path.read_bytes())
+            for path in output_dir.glob("*.json")
+        }
+    assert set(final_visible) == EXPECTED_SCHEMA_FILES
+    final_generations = {schema.get("$comment") for schema in final_visible.values()}
+    assert len(final_generations) == 1
+    observed_generations.update(final_generations)
+    assert observed_generations <= {initial_generation, *generations}
+    assert observed_generations & set(generations)
     assert list(tmp_path.glob(".generated.schemas.*")) == []
 
 

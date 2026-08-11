@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -187,11 +187,20 @@ def read_artifact(path: Path) -> ArtifactEnvelope:
 
     raw = Path(path).read_bytes()
     try:
-        json.loads(raw, parse_constant=_reject_nonstandard_json_constant)
-    except (UnicodeDecodeError, ValueError) as exc:
+        document = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ArtifactMalformedError("artifact is not a valid UTF-8 JSON document") from exc
+    if document.startswith("\ufeff"):
+        cause = ValueError("UTF-8 BOM is not permitted in canonical artifacts")
+        raise ArtifactMalformedError(
+            "artifact is not a canonical UTF-8 JSON document"
+        ) from cause
+    try:
+        json.loads(document, parse_constant=_reject_nonstandard_json_constant)
+    except ValueError as exc:
         raise ArtifactMalformedError("artifact is not a valid UTF-8 JSON document") from exc
     try:
-        envelope = ArtifactEnvelope.model_validate_json(raw)
+        envelope = ArtifactEnvelope.model_validate_json(document)
     except ValidationError as exc:
         raise ArtifactSchemaError("artifact envelope failed schema validation") from exc
     _verify_content_hash(envelope)
@@ -458,19 +467,24 @@ def _publish_over_existing(output_dir: Path, staging_dir: Path, backup_dir: Path
     _fsync_directory(output_dir.parent)
 
 
-def export_schemas(output_dir: Path, *, lock_timeout: float = 10.0) -> None:
-    """Publish a durable deterministic schema set with serialized writers.
+def _publish_schema_documents(
+    output_dir: Path,
+    documents: Mapping[str, bytes] | Callable[[], Mapping[str, bytes]],
+    *,
+    lock_timeout: float = 10.0,
+) -> None:
+    """Publish one schema generation under the shared publication lock.
 
-    Existing readers retain complete, individually atomically replaced JSON
-    files throughout publication. A lock and recoverable backup transaction
-    prevent concurrent writers or interrupted replacement from losing the last
-    complete generation.
+    Individual files are atomically replaced for lock-free readers. Readers
+    that require a consistent multi-file generation must hold
+    ``_schema_export_lock`` while enumerating and parsing the directory.
     """
 
     output_dir = Path(output_dir)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with _schema_export_lock(output_dir, timeout=lock_timeout):
         _recover_schema_publication(output_dir)
+        schema_documents = documents() if callable(documents) else documents
         transaction_id = uuid.uuid4().hex
         staging_dir = Path(
             tempfile.mkdtemp(
@@ -480,7 +494,7 @@ def export_schemas(output_dir: Path, *, lock_timeout: float = 10.0) -> None:
         )
         backup_dir: Path | None = None
         try:
-            for filename, schema_bytes in _schema_documents().items():
+            for filename, schema_bytes in schema_documents.items():
                 _write_file_durably(staging_dir / filename, schema_bytes)
             _fsync_directory(staging_dir)
 
@@ -501,3 +515,19 @@ def export_schemas(output_dir: Path, *, lock_timeout: float = 10.0) -> None:
         finally:
             if _path_exists(staging_dir):
                 _remove_path(staging_dir)
+
+
+def export_schemas(output_dir: Path, *, lock_timeout: float = 10.0) -> None:
+    """Publish a durable deterministic schema set with serialized writers.
+
+    A lock and recoverable backup transaction prevent concurrent writers or
+    interrupted replacement from losing the last complete generation. Each
+    JSON file is atomically replaced; a consistent multi-file read must use
+    the same publication lock described by ``_publish_schema_documents``.
+    """
+
+    _publish_schema_documents(
+        output_dir,
+        _schema_documents,
+        lock_timeout=lock_timeout,
+    )
