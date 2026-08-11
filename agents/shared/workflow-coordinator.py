@@ -413,6 +413,8 @@ def format_reminder(project: dict[str, Any], pending_pages: list[dict[str, Any]]
     project_id = project.get("project_id", "unknown")
     business_name = project.get("business_name") or "Doanh nghiệp chưa đặt tên"
     status = project.get("status") or "unknown"
+    tracking = project.get("message_tracking") or {}
+    review_url = tracking.get("review_message_url")
     lines = [
         "🔔 **NHẮC VIỆC PROJECT PM**",
         f"**{business_name}**",
@@ -423,12 +425,15 @@ def format_reminder(project: dict[str, Any], pending_pages: list[dict[str, Any]]
         lines.extend([
             "**Đang chờ xử lý review**",
             "Project chưa có page/checklist để PM theo dõi chi tiết.",
+            f"🔗 Bài review: <{review_url}>" if review_url else "🔗 Bài review: chưa có link message được track.",
             "",
             "**Bước tiếp theo**",
             f"1. Duyệt lead: `/approve {project_id}`",
             f"2. Yêu cầu chỉnh: `/request-change {project_id} <note>`",
         ])
     else:
+        if review_url:
+            lines.append(f"🔗 Bài review: <{review_url}>")
         lines.append("**Các việc cần xử lý**")
         for page in pending_pages:
             slug = str(page.get("slug") or "unknown")

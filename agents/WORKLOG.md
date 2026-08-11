@@ -203,6 +203,20 @@ When Minh writes a Vietnamese message such as `oke thử cho tìm một con khá
 - Task channel received formatted message ID `1536691948587327592`.
 - Old heredoc failure remains only as historical message/run history; future cron runs use the command payload.
 
+## 2026-08-11 — Reminder links and Discord checklist research
+
+### Reminder link change
+
+- `reminder-dispatch` now renders `message_tracking.review_message_url` as a clickable `🔗 Bài review` line beside `/approve` and `/request-change` for review-stage projects.
+- Existing verified review IDs for ATAD, Zamil, and Pebsteel were backfilled; Pebsteel has two tracked review parts because Discord split the dossier.
+
+### Checklist research
+
+- Verified live Discord permissions and OpenClaw version `2026.7.1-2`.
+- Official docs describe Components v2 buttons/selects/modals with `allowedUsers` and callback TTL, while the current capability probe does not advertise components separately.
+- Wrote [Discord checklist research](../docs/research/2026-08-11-discord-checklist-openclaw.md). Recommended rollout: deterministic check-task state first, native button test second, permanent typed-command fallback.
+- Recommended semantics: each tick completes one task; all ticks produce `checklist-complete`; `offer-ready` still requires page approvals and final confirmations unless Minh explicitly overrides.
+
 ## 2026-08-11 — Track discovery messages and support safe discard
 
 ### User request

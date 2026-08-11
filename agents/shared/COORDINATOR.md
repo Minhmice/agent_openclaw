@@ -105,3 +105,5 @@ python3 /home/minhmice/.openclaw/workspace/workflow/workflow-coordinator.py \
 ```
 
 `reminder-dispatch` sends formatted Vietnamese messages directly to the task channel and stays silent when no reminder is due.
+
+When a project has `message_tracking.review_message_url`, reminders must render it as `🔗 Bài review: <link>` next to approval actions. When a checklist message is later tracked, render its direct URL next to page/task actions as well.

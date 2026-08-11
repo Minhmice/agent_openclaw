@@ -93,11 +93,15 @@ class WorkflowCoordinatorTests(unittest.TestCase):
             "status": "review",
             "last_update": "2026-08-11T10:18:27+00:00",
             "pages": [],
+            "message_tracking": {
+                "review_message_url": "https://discord.com/channels/1446612692910739637/1536658476288450630/200",
+            },
         }
         message = coordinator.format_reminder(project, [])
         self.assertIn("NHẮC VIỆC", message)
         self.assertIn("Acme Demo", message)
         self.assertIn("/approve acme-demo", message)
+        self.assertIn("https://discord.com/channels/1446612692910739637/1536658476288450630/200", message)
         self.assertNotIn("None", message)
 
     def test_reminder_message_groups_page_action_details(self):
