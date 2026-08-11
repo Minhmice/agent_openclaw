@@ -2,6 +2,23 @@
 
 This file records every implementation/review session for the OpenClaw multi-agent workflow. Never put passwords, tokens, private keys, cookies, provider secrets, or session content here.
 
+## 2026-08-11 — Remote sync attempt after credential handoff
+
+### Request
+
+- Minh requested live sync of the Discord owner/exec-approval parity fix and the model timeout fix.
+
+### Verification
+
+- Checked the runner without revealing secret values: `OPENCLAW_SSH_KEY`, `OPENCLAW_SSH_PASSWORD`, `OPENCLAW_SSH_HOST`, and `OPENCLAW_SSH_USER` are unset.
+- Checked the current app terminal: no interactive terminal session is attached.
+- Non-interactive SSH reached `100.121.246.38` but returned `Permission denied (publickey,password)`.
+
+### Status
+
+- No remote file, config, service, or Discord state was mutated.
+- Waiting for an SSH key or approved secret-provider integration in the agent runner. Passwords must not be embedded in commands, logs, or repository files.
+
 ## 2026-08-11 — Diagnose model idle timeout
 
 ### Evidence
