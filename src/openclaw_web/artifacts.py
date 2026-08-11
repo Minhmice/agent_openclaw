@@ -35,7 +35,18 @@ from openclaw_web.models import (
 )
 
 _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
-_WEB_URL_SCHEME_PATTERN = r"^[Hh][Tt][Tt][Pp][Ss]?://"
+# JSON Schema consumers do not consistently enforce ``format: uri``. Keep the
+# HTTP(S), authority, balanced bracketed-host, whitespace, and port bounds in an
+# ECMA-262-compatible pattern as well. General URI syntax remains the format
+# checker's responsibility; DNS and network-safety policy belong to later work.
+_WEB_URL_PATTERN = (
+    r"^[Hh][Tt][Tt][Pp][Ss]?://"
+    r"(?:[^\s/?#@]+@)?"
+    r"(?:\[[0-9A-Fa-f:.]+\]|[^\s/?#:@\[\]]+)"
+    r"(?::(?:[1-9]|[1-9][0-9]{1,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|"
+    r"65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?"
+    r"(?:[/?#][^\s]*)?$"
+)
 _SCHEMA_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
     ("artifact_envelope.json", ArtifactEnvelope),
     ("audit_record.json", AuditRecord),
@@ -281,7 +292,7 @@ def _add_nonblank_patterns(node: Any) -> None:
 def _add_web_url_patterns(node: Any) -> None:
     if isinstance(node, dict):
         if node.get("format") == "uri":
-            node["pattern"] = _WEB_URL_SCHEME_PATTERN
+            node["pattern"] = _WEB_URL_PATTERN
         for value in node.values():
             _add_web_url_patterns(value)
     elif isinstance(node, list):

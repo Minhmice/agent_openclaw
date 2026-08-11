@@ -726,16 +726,31 @@ def test_generated_schemas_declare_draft_2020_12_and_are_valid(tmp_path: Path) -
 @pytest.mark.parametrize(
     ("url", "expected_acceptance"),
     [
-        pytest.param("http://example.com/path", True, id="http"),
-        pytest.param("https://example.com/path", True, id="https"),
+        pytest.param("http://example.com/", True, id="domain-http"),
+        pytest.param("https://example.com/", True, id="domain-https"),
+        pytest.param("http://localhost/", True, id="localhost"),
+        pytest.param("http://127.0.0.1/", True, id="ipv4"),
+        pytest.param("http://[::1]/", True, id="bracketed-ipv6"),
+        pytest.param("https://example.com:1/", True, id="lowest-port"),
+        pytest.param("https://example.com:65535/", True, id="highest-port"),
+        pytest.param(
+            "https://example.com/a/b?q=value#section",
+            True,
+            id="path-query-fragment",
+        ),
         pytest.param("HTTP://example.com/path", True, id="uppercase-http"),
         pytest.param("hTtPs://example.com/path", True, id="mixed-case-https"),
+        pytest.param("http://", False, id="missing-authority"),
+        pytest.param("http:///path", False, id="missing-host"),
+        pytest.param("http://exa mple.com", False, id="authority-whitespace"),
+        pytest.param("http://[::1", False, id="unbalanced-bracketed-ipv6"),
+        pytest.param("http://example.com:99999", False, id="port-overflow"),
         pytest.param("ftp://example.com/path", False, id="ftp"),
         pytest.param("file:///tmp/page", False, id="file"),
         pytest.param("mailto:owner@example.com", False, id="mailto"),
     ],
 )
-def test_exported_url_schemas_match_pydantic_web_scheme_validation(
+def test_exported_url_schemas_match_pydantic_web_url_validation(
     tmp_path: Path,
     url: str,
     expected_acceptance: bool,
@@ -762,10 +777,50 @@ def test_exported_url_schemas_match_pydantic_web_scheme_validation(
                 format_checker=FormatChecker(),
             ).iter_errors(payload)
         )
+        pattern_accepts = not list(
+            Draft202012Validator(schemas[filename]).iter_errors(payload)
+        )
 
         assert pydantic_accepts is expected_acceptance, case_id
         assert schema_accepts is expected_acceptance, case_id
+        assert pattern_accepts is expected_acceptance, case_id
         assert schema_accepts is pydantic_accepts, case_id
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param(
+            "https://münich.example/straße?q=café#frägment",
+            id="unicode-host-and-resource",
+        ),
+        pytest.param(
+            "https://usér:päss@example.com/private",
+            id="unicode-credentials",
+        ),
+    ],
+)
+def test_exported_url_schemas_accept_pydantic_canonical_json_urls(
+    tmp_path: Path,
+    url: str,
+) -> None:
+    output_dir = tmp_path / "schemas"
+    export_schemas(output_dir)
+    schemas = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in output_dir.glob("*.json")
+    }
+
+    for case_id, model, filename in URL_FIELD_CASES:
+        payload = _url_field_payload(case_id, url)
+        record = model.model_validate_json(json.dumps(payload, ensure_ascii=False))
+        canonical_payload = record.model_dump(mode="json")
+
+        assert url not in json.dumps(canonical_payload, ensure_ascii=False), case_id
+        Draft202012Validator(
+            schemas[filename],
+            format_checker=FormatChecker(),
+        ).validate(canonical_payload)
 
 
 @pytest.mark.parametrize(
