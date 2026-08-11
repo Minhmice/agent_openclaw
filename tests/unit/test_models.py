@@ -7,18 +7,42 @@ from pydantic import ValidationError
 
 from openclaw_web.models import (
     ArtifactEnvelope,
+    AuditRecord,
+    Candidate,
     CandidateSeed,
     CandidateState,
     ClaimStatus,
+    ComponentSet,
     Confidence,
+    DeliveryRecord,
     DeliveryState,
     Evidence,
+    FeedbackEvent,
     IssueRecord,
+    PageRecord,
     PageState,
     ProjectState,
+    RunRecord,
     ScoreRecord,
     Severity,
+    StageRecord,
     export_schemas,
+)
+
+CANONICAL_MODELS = (
+    ArtifactEnvelope,
+    AuditRecord,
+    Candidate,
+    CandidateSeed,
+    ComponentSet,
+    DeliveryRecord,
+    Evidence,
+    FeedbackEvent,
+    IssueRecord,
+    PageRecord,
+    RunRecord,
+    ScoreRecord,
+    StageRecord,
 )
 
 
@@ -243,6 +267,100 @@ def test_models_reject_unknown_fields_and_unsafe_primitive_coercion() -> None:
         ScoreRecord.model_validate(_score_payload(score_value="70"))
     with pytest.raises(ValidationError):
         ScoreRecord.model_validate(_score_payload(deterministic=1))
+
+
+@pytest.mark.parametrize("model", CANONICAL_MODELS)
+def test_all_canonical_models_enable_strict_python_validation(model: type[Any]) -> None:
+    assert model.model_config.get("strict") is True
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        pytest.param(
+            CandidateSeed,
+            {
+                "url": b"https://example.com/",
+                "business_name": "Công ty Ví dụ",
+                "source_url": "https://directory.example/company",
+                "source_type": "public-listing",
+                "discovered_at": datetime.now(UTC),
+            },
+            id="bytes-url",
+        ),
+        pytest.param(
+            Candidate,
+            {
+                "candidate_id": b"candidate-1",
+                "name": "Công ty Ví dụ",
+            },
+            id="bytes-string",
+        ),
+        pytest.param(
+            Candidate,
+            {
+                "candidate_id": "candidate-1",
+                "name": "Công ty Ví dụ",
+                "source_urls": ("https://example.com/",),
+            },
+            id="tuple-list",
+        ),
+        pytest.param(
+            ScoreRecord,
+            _score_payload(evidence_ids={"ev-1"}),
+            id="set-list",
+        ),
+        pytest.param(
+            ScoreRecord,
+            _score_payload(score_value="70"),
+            id="string-float",
+        ),
+        pytest.param(
+            ScoreRecord,
+            _score_payload(deterministic="true"),
+            id="string-bool",
+        ),
+        pytest.param(
+            FeedbackEvent,
+            {
+                "event_id": "event-1",
+                "event_type": "review",
+                "project_id": "project-1",
+                "actor_id": "actor-1",
+                "action": "approve",
+                "created_at": datetime.now(UTC),
+                "state_version": "1",
+            },
+            id="string-int",
+        ),
+        pytest.param(
+            Evidence,
+            _evidence_payload(captured_at="2026-08-12T00:00:00Z"),
+            id="string-datetime",
+        ),
+        pytest.param(
+            Evidence,
+            _evidence_payload(captured_at=datetime.now(UTC).replace(tzinfo=None)),
+            id="naive-datetime",
+        ),
+    ],
+)
+def test_canonical_models_reject_coercible_python_inputs(
+    model: type[Any], payload: dict[str, Any]
+) -> None:
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
+def test_strict_models_preserve_json_url_and_datetime_parsing() -> None:
+    candidate = Candidate.model_validate_json(
+        '{"candidate_id":"candidate-1","name":"Công ty Ví dụ",'
+        '"website_url":"https://example.com/",'
+        '"discovered_at":"2026-08-12T00:00:00Z"}'
+    )
+
+    assert str(candidate.website_url) == "https://example.com/"
+    assert candidate.discovered_at == datetime(2026, 8, 12, tzinfo=UTC)
 
 
 def test_evidence_rejects_naive_timestamps_and_invalid_hashes() -> None:

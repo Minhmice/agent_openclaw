@@ -112,7 +112,12 @@ class DeliveryState(str, Enum):
 class StrictModel(BaseModel):
     """Base configuration shared by canonical operator-facing records."""
 
-    model_config = ConfigDict(extra="forbid", validate_assignment=True, validate_default=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        validate_assignment=True,
+        validate_default=True,
+    )
 
 
 class CandidateSeed(StrictModel):
