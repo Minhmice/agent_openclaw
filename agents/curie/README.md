@@ -12,6 +12,7 @@ Read in this order:
 6. [TASK.md](TASK.md).
 7. [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
 8. [PAGE-PLAYBOOK.md](PAGE-PLAYBOOK.md).
+9. [Canonical website redesign spec](../shared/website-redesign-agent-spec.md).
 
 ## Mission
 
@@ -32,3 +33,4 @@ This folder contains no password, token, private key, cookie, provider key, or s
 - `TASK.md`: Curie's current assignment and acceptance criteria.
 - `OPEN-QUESTIONS.md`: decisions that must be answered before planning is finalized.
 - `PAGE-PLAYBOOK.md`: detailed page templates, content/evidence checklist, reusable modules, approval states, and the offer-ready package.
+- `../shared/website-redesign-agent-spec.md`: canonical extraction and design-generation contract for the downstream Website Brief Agent.
