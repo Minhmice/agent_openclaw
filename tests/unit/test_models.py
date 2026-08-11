@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 from pydantic import ValidationError
 
 from openclaw_web.models import (
@@ -234,7 +235,7 @@ def test_non_deterministic_score_can_record_unavailable_inputs_without_evidence(
         )
     )
 
-    assert score.unavailable_inputs == ["mobile_lcp"]
+    assert score.unavailable_inputs == ("mobile_lcp",)
     assert score.confidence is Confidence.LOW
 
 
@@ -384,10 +385,443 @@ def test_artifact_envelope_requires_utc_timestamp_and_canonical_metadata() -> No
     envelope = ArtifactEnvelope.model_validate(payload)
     assert envelope.created_at.utcoffset() == timedelta(0)
 
-    with pytest.raises(ValidationError):
-        ArtifactEnvelope.model_validate(
-            {**payload, "created_at": datetime.now(timezone(timedelta(hours=7)))}
-        )
+    offset_envelope = ArtifactEnvelope.model_validate(
+        {**payload, "created_at": datetime.now(timezone(timedelta(hours=7)))}
+    )
+    assert offset_envelope.created_at.utcoffset() == timedelta(0)
     for field in ("schema_version", "generator_version", "source_run_id"):
         with pytest.raises(ValidationError):
             ArtifactEnvelope.model_validate({**payload, field: "   "})
+
+
+def test_rejected_validated_replacement_does_not_mutate_original() -> None:
+    evidence = Evidence.model_validate(_evidence_payload())
+
+    with pytest.raises(ValidationError):
+        evidence.validated_replace(
+            claim_status=ClaimStatus.INFERRED,
+            evidence_urls=[],
+            confidence_gap=None,
+        )
+
+    assert evidence.claim_status is ClaimStatus.OBSERVED
+    assert evidence.evidence_urls == ()
+    assert evidence.confidence_gap is None
+
+
+@pytest.mark.parametrize(
+    ("record", "mutation"),
+    [
+        pytest.param(
+            Evidence.model_validate(
+                _evidence_payload(observed_value={"claims": [{"text": "observed"}]})
+            ),
+            lambda record: record.observed_value["claims"][0].__setitem__("text", "changed"),
+            id="evidence-json",
+        ),
+        pytest.param(
+            ScoreRecord.model_validate(
+                _score_payload(inputs={"signals": [{"name": "mobile_lcp"}]})
+            ),
+            lambda record: record.inputs["signals"][0].__setitem__("name", "changed"),
+            id="score-inputs",
+        ),
+        pytest.param(
+            IssueRecord(
+                issue_id="issue-1",
+                candidate_id="candidate-1",
+                title="Missing heading",
+                severity=Severity.P2,
+                evidence_ids=["ev-1"],
+                recommendation_vi="Them tieu de.",
+            ),
+            lambda record: record.evidence_ids.append("ev-2"),
+            id="issue-evidence-ids",
+        ),
+        pytest.param(
+            ComponentSet(
+                component_set_id="component-1",
+                message_id="message-1",
+                channel_id="channel-1",
+                project_id="project-1",
+                card_type="review",
+                allowed_actions=["approve"],
+                expires_at=datetime(2026, 8, 13, tzinfo=UTC),
+                state_version=0,
+                project_state=ProjectState.REVIEW,
+            ),
+            lambda record: record.allowed_actions.append("reject"),
+            id="component-actions",
+        ),
+        pytest.param(
+            ArtifactEnvelope(
+                schema_version="candidate-v1",
+                generator_version="generator-v1",
+                source_run_id="run-1",
+                created_at=datetime(2026, 8, 12, tzinfo=UTC),
+                content_hash="a" * 64,
+                payload={"items": [{"id": "candidate-1"}]},
+            ),
+            lambda record: record.payload["items"][0].__setitem__("id", "changed"),
+            id="artifact-payload",
+        ),
+    ],
+)
+def test_invariant_bearing_collections_are_deeply_immutable(
+    record: Any,
+    mutation: Any,
+) -> None:
+    before = record.model_dump(mode="json")
+
+    with pytest.raises((AttributeError, TypeError)):
+        mutation(record)
+
+    assert record.model_dump(mode="json") == before
+
+
+def test_frozen_models_reject_field_assignment_without_partial_mutation() -> None:
+    evidence = Evidence.model_validate(_evidence_payload())
+
+    with pytest.raises(ValidationError):
+        evidence.claim_status = ClaimStatus.INFERRED
+
+    assert evidence.claim_status is ClaimStatus.OBSERVED
+
+
+def test_immutable_collections_preserve_constructor_json_and_schema_shapes() -> None:
+    score = ScoreRecord.model_validate(_score_payload(inputs={"metrics": [1, {"ok": True}]}))
+    score_from_json = ScoreRecord.model_validate_json(
+        '{"score_name":"technical_pain","score_value":70,'
+        '"rubric_version":"base-v1","inputs":{"metrics":[1,{"ok":true}]},'
+        '"evidence_ids":["ev-1"],"deterministic":true,'
+        '"explanation_vi":"Diem ky thuat."}'
+    )
+
+    assert score.evidence_ids == ("ev-1",)
+    assert score_from_json.inputs == score.inputs
+    assert score.model_dump(mode="json")["inputs"] == {"metrics": [1, {"ok": True}]}
+    schema = ScoreRecord.model_json_schema(mode="serialization")
+    assert schema["properties"]["inputs"]["type"] == "object"
+    assert schema["properties"]["evidence_ids"]["type"] == "array"
+
+
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    [
+        pytest.param(UTC, datetime(2026, 8, 12, 0, 0, tzinfo=UTC), id="utc"),
+        pytest.param(
+            timezone(timedelta(hours=7)),
+            datetime(2026, 8, 11, 17, 0, tzinfo=UTC),
+            id="bangkok-offset",
+        ),
+        pytest.param(
+            timezone(timedelta(hours=-4)),
+            datetime(2026, 8, 12, 4, 0, tzinfo=UTC),
+            id="dst-style-offset",
+        ),
+    ],
+)
+def test_python_persisted_timestamps_normalize_to_utc(
+    offset: timezone,
+    expected: datetime,
+) -> None:
+    candidate = Candidate(
+        candidate_id="candidate-1",
+        name="Example",
+        discovered_at=datetime(2026, 8, 12, 0, 0, tzinfo=offset),
+    )
+
+    assert candidate.discovered_at == expected
+    assert candidate.discovered_at is not None
+    assert candidate.discovered_at.tzinfo is UTC
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        pytest.param("2026-08-12T00:00:00Z", datetime(2026, 8, 12, tzinfo=UTC), id="z"),
+        pytest.param(
+            "2026-08-12T00:00:00+00:00",
+            datetime(2026, 8, 12, tzinfo=UTC),
+            id="explicit-utc",
+        ),
+        pytest.param(
+            "2026-08-12T07:00:00+07:00",
+            datetime(2026, 8, 12, tzinfo=UTC),
+            id="bangkok-offset",
+        ),
+        pytest.param(
+            "2026-08-11T20:00:00-04:00",
+            datetime(2026, 8, 12, tzinfo=UTC),
+            id="dst-style-offset",
+        ),
+    ],
+)
+def test_json_persisted_timestamps_normalize_to_utc(
+    timestamp: str,
+    expected: datetime,
+) -> None:
+    candidate = Candidate.model_validate_json(
+        '{"candidate_id":"candidate-1","name":"Example",'
+        f'"discovered_at":"{timestamp}"}}'
+    )
+
+    assert candidate.discovered_at == expected
+    assert candidate.model_dump(mode="json")["discovered_at"].endswith("Z")
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        pytest.param(
+            Candidate,
+            {
+                "candidate_id": "candidate-1",
+                "name": "Example",
+                "discovered_at": datetime(2026, 8, 13, tzinfo=UTC),
+                "updated_at": datetime(2026, 8, 12, tzinfo=UTC),
+            },
+            id="candidate-updated-before-discovered",
+        ),
+        pytest.param(
+            AuditRecord,
+            {
+                "audit_id": "audit-1",
+                "candidate_id": "candidate-1",
+                "source_run_id": "run-1",
+                "audit_version": "v1",
+                "status": "complete",
+                "created_at": datetime(2026, 8, 13, tzinfo=UTC),
+                "completed_at": datetime(2026, 8, 12, tzinfo=UTC),
+            },
+            id="audit-completed-before-created",
+        ),
+        pytest.param(
+            StageRecord,
+            {
+                "stage_id": "stage-1",
+                "run_id": "run-1",
+                "stage_name": "audit",
+                "status": "complete",
+                "started_at": datetime(2026, 8, 13, tzinfo=UTC),
+                "completed_at": datetime(2026, 8, 12, tzinfo=UTC),
+            },
+            id="stage-completed-before-started",
+        ),
+        pytest.param(
+            RunRecord,
+            {
+                "run_id": "run-1",
+                "status": "complete",
+                "started_at": datetime(2026, 8, 13, tzinfo=UTC),
+                "completed_at": datetime(2026, 8, 12, tzinfo=UTC),
+            },
+            id="run-completed-before-started",
+        ),
+    ],
+)
+def test_models_reject_reversed_persisted_intervals(
+    model: type[Any],
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises(ValidationError, match="must not be before"):
+        model.model_validate(payload)
+
+
+def test_generated_schemas_declare_draft_2020_12_and_are_valid(tmp_path: Path) -> None:
+    output_dir = tmp_path / "schemas"
+    export_schemas(output_dir)
+
+    for path in output_dir.glob("*.json"):
+        schema = __import__("json").loads(path.read_text(encoding="utf-8"))
+        assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        Draft202012Validator.check_schema(schema)
+
+
+@pytest.mark.parametrize(
+    ("model", "filename", "payload"),
+    [
+        pytest.param(
+            Evidence,
+            "evidence.json",
+            _evidence_payload(
+                claim_status=ClaimStatus.INFERRED,
+                evidence_urls=[],
+                confidence_gap=None,
+                captured_at="2026-08-12T00:00:00Z",
+            ),
+            id="evidence-derived-without-support",
+        ),
+        pytest.param(
+            ScoreRecord,
+            "score_record.json",
+            _score_payload(evidence_ids=[]),
+            id="deterministic-score-without-evidence",
+        ),
+        pytest.param(
+            IssueRecord,
+            "issue_record.json",
+            {
+                "issue_id": "   ",
+                "candidate_id": "candidate-1",
+                "title": "Missing heading",
+                "severity": "P2",
+                "evidence_ids": ["ev-1"],
+                "recommendation_vi": "Them tieu de.",
+            },
+            id="blank-trimmed-string",
+        ),
+        pytest.param(
+            Evidence,
+            "evidence.json",
+            {
+                **_evidence_payload(captured_at="2026-08-12T00:00:00Z"),
+                "content_hash": "A" * 64,
+            },
+            id="uppercase-sha256",
+        ),
+        pytest.param(
+            IssueRecord,
+            "issue_record.json",
+            {
+                "issue_id": "issue-1",
+                "candidate_id": "candidate-1",
+                "title": "Missing heading",
+                "severity": "P2",
+                "evidence_ids": [],
+                "recommendation_vi": "Them tieu de.",
+            },
+            id="issue-empty-evidence",
+        ),
+        pytest.param(
+            IssueRecord,
+            "issue_record.json",
+            {
+                "issue_id": "issue-1",
+                "candidate_id": "candidate-1",
+                "title": "Missing heading",
+                "severity": "P2",
+                "evidence_ids": ["ev-1"],
+                "recommendation_vi": "   ",
+            },
+            id="issue-blank-recommendation",
+        ),
+        pytest.param(
+            ComponentSet,
+            "component_set.json",
+            {
+                "component_set_id": "component-1",
+                "message_id": "message-1",
+                "channel_id": "channel-1",
+                "project_id": "project-1",
+                "card_type": "review",
+                "allowed_actions": [],
+                "expires_at": "2026-08-13T00:00:00Z",
+                "state_version": 0,
+                "project_state": "review",
+            },
+            id="component-empty-actions",
+        ),
+    ],
+)
+def test_json_schema_and_pydantic_reject_same_representative_invalid_records(
+    tmp_path: Path,
+    model: type[Any],
+    filename: str,
+    payload: dict[str, Any],
+) -> None:
+    output_dir = tmp_path / "schemas"
+    export_schemas(output_dir)
+    schema = __import__("json").loads((output_dir / filename).read_text(encoding="utf-8"))
+
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+    errors = list(
+        Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(payload)
+    )
+    assert errors
+
+
+@pytest.mark.parametrize(
+    ("filename", "record"),
+    [
+        pytest.param(
+            "evidence.json",
+            Evidence.model_validate(
+                _evidence_payload(
+                    claim_status=ClaimStatus.INFERRED,
+                    evidence_urls=["https://source.example/fact"],
+                    captured_at=datetime(
+                        2026,
+                        8,
+                        12,
+                        7,
+                        tzinfo=timezone(timedelta(hours=7)),
+                    ),
+                )
+            ),
+            id="evidence",
+        ),
+        pytest.param(
+            "score_record.json",
+            ScoreRecord.model_validate(_score_payload()),
+            id="score",
+        ),
+        pytest.param(
+            "issue_record.json",
+            IssueRecord(
+                issue_id="issue-1",
+                candidate_id="candidate-1",
+                title="Missing heading",
+                severity=Severity.P2,
+                evidence_ids=["ev-1"],
+                recommendation_vi="Them tieu de.",
+            ),
+            id="issue",
+        ),
+        pytest.param(
+            "artifact_envelope.json",
+            ArtifactEnvelope(
+                schema_version="candidate-v1",
+                generator_version="generator-v1",
+                source_run_id="run-1",
+                created_at=datetime(2026, 8, 12, tzinfo=UTC),
+                content_hash="a" * 64,
+                payload={"id": "candidate-1"},
+            ),
+            id="artifact",
+        ),
+    ],
+)
+def test_json_schema_accepts_canonical_model_serialization(
+    tmp_path: Path,
+    filename: str,
+    record: Any,
+) -> None:
+    output_dir = tmp_path / "schemas"
+    export_schemas(output_dir)
+    schema = __import__("json").loads(
+        (output_dir / filename).read_text(encoding="utf-8")
+    )
+
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(
+        record.model_dump(mode="json")
+    )
+
+
+def test_artifact_schema_requires_canonical_utc_serialization(tmp_path: Path) -> None:
+    output_dir = tmp_path / "schemas"
+    export_schemas(output_dir)
+    schema = __import__("json").loads(
+        (output_dir / "artifact_envelope.json").read_text(encoding="utf-8")
+    )
+    document = {
+        "schema_version": "candidate-v1",
+        "generator_version": "generator-v1",
+        "source_run_id": "run-1",
+        "created_at": "2026-08-12T07:00:00+07:00",
+        "content_hash": "a" * 64,
+        "payload": {"id": "candidate-1"},
+    }
+
+    assert list(Draft202012Validator(schema).iter_errors(document))

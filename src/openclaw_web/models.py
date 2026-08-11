@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Any, NoReturn, Self
 
 from pydantic import (
+    AfterValidator,
     AnyHttpUrl,
     AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
     JsonValue,
+    PlainSerializer,
     StringConstraints,
-    field_validator,
     model_validator,
 )
 
@@ -27,7 +28,102 @@ Sha256 = Annotated[
     str,
     StringConstraints(pattern=r"^[0-9a-f]{64}$", strict=True),
 ]
-StrictAwareDatetime = Annotated[AwareDatetime, Field(strict=True)]
+
+
+class FrozenDict(dict[str, Any]):
+    """JSON-object-compatible mapping that rejects every in-place mutation."""
+
+    @staticmethod
+    def _immutable() -> NoReturn:
+        raise TypeError("canonical JSON mappings are immutable")
+
+    def __setitem__(self, key: str, value: Any) -> NoReturn:
+        self._immutable()
+
+    def __delitem__(self, key: str) -> NoReturn:
+        self._immutable()
+
+    def clear(self) -> NoReturn:
+        self._immutable()
+
+    def pop(self, key: str, default: Any = None) -> NoReturn:
+        self._immutable()
+
+    def popitem(self) -> NoReturn:
+        self._immutable()
+
+    def setdefault(self, key: str, default: Any = None) -> NoReturn:
+        self._immutable()
+
+    def update(self, *args: Any, **kwargs: Any) -> NoReturn:
+        self._immutable()
+
+    def __ior__(self, value: Any) -> NoReturn:  # type: ignore[misc]
+        self._immutable()
+
+
+class FrozenList(tuple[Any, ...]):
+    """Tuple-backed JSON array with practical equality to ordinary lists."""
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, list | tuple):
+            return tuple(self) == tuple(other)
+        return False
+
+    __hash__ = tuple.__hash__
+
+
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return FrozenDict({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return FrozenList(_freeze_json(item) for item in value)
+    return value
+
+
+def _freeze_sequence(value: list[Any]) -> tuple[Any, ...]:
+    return FrozenList(value)
+
+
+def _thaw_for_validation(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _thaw_for_validation(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_for_validation(item) for item in value]
+    return value
+
+
+def _normalize_persisted_timestamp(value: datetime) -> datetime:
+    """Normalize an aware persisted timestamp to canonical UTC."""
+
+    return value.astimezone(UTC)
+
+
+PersistedTimestamp = Annotated[
+    AwareDatetime,
+    Field(strict=True),
+    AfterValidator(_normalize_persisted_timestamp),
+]
+ImmutableJson = Annotated[
+    JsonValue,
+    AfterValidator(_freeze_json),
+    PlainSerializer(_thaw_for_validation, return_type=JsonValue),
+]
+ImmutableJsonObject = Annotated[
+    dict[str, JsonValue],
+    AfterValidator(_freeze_json),
+    PlainSerializer(_thaw_for_validation, return_type=dict[str, JsonValue]),
+]
+ImmutableHttpUrlList = Annotated[
+    list[AnyHttpUrl],
+    AfterValidator(_freeze_sequence),
+    PlainSerializer(_thaw_for_validation, return_type=list[AnyHttpUrl]),
+]
+ImmutableStringList = Annotated[
+    list[NonBlankString],
+    AfterValidator(_freeze_sequence),
+    PlainSerializer(_thaw_for_validation, return_type=list[NonBlankString]),
+]
 StrictBool = Annotated[bool, Field(strict=True)]
 StrictNonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 
@@ -114,10 +210,20 @@ class StrictModel(BaseModel):
 
     model_config = ConfigDict(
         extra="forbid",
+        frozen=True,
         strict=True,
-        validate_assignment=True,
         validate_default=True,
     )
+
+    def validated_replace(self, **changes: Any) -> Self:
+        """Return a fully revalidated replacement, leaving this frozen record unchanged."""
+
+        values = {
+            name: _thaw_for_validation(getattr(self, name))
+            for name in type(self).model_fields
+        }
+        values.update(changes)
+        return type(self).model_validate(values)
 
 
 class CandidateSeed(StrictModel):
@@ -127,7 +233,7 @@ class CandidateSeed(StrictModel):
     business_name: NonBlankString
     source_url: AnyHttpUrl
     source_type: NonBlankString
-    discovered_at: StrictAwareDatetime
+    discovered_at: PersistedTimestamp
     seed_id: NonBlankString | None = None
     address: NonBlankString | None = None
     latitude: float | None = Field(default=None, strict=True, allow_inf_nan=False, ge=-90, le=90)
@@ -140,7 +246,7 @@ class CandidateSeed(StrictModel):
     )
     industry_hint: NonBlankString | None = None
     external_id: NonBlankString | None = None
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    metadata: ImmutableJsonObject = Field(default_factory=dict)
 
 
 class Candidate(StrictModel):
@@ -163,10 +269,20 @@ class Candidate(StrictModel):
         ge=-180,
         le=180,
     )
-    discovered_at: StrictAwareDatetime | None = None
-    updated_at: StrictAwareDatetime | None = None
-    source_urls: list[AnyHttpUrl] = Field(default_factory=list)
+    discovered_at: PersistedTimestamp | None = None
+    updated_at: PersistedTimestamp | None = None
+    source_urls: ImmutableHttpUrlList = Field(default_factory=list)
     duplicate_of: NonBlankString | None = None
+
+    @model_validator(mode="after")
+    def require_updated_after_discovery(self) -> Self:
+        if (
+            self.discovered_at is not None
+            and self.updated_at is not None
+            and self.updated_at < self.discovered_at
+        ):
+            raise ValueError("updated_at must not be before discovered_at")
+        return self
 
 
 class PageRecord(StrictModel):
@@ -179,7 +295,7 @@ class PageRecord(StrictModel):
     status_code: int | None = Field(default=None, strict=True, ge=100, le=599)
     title: NonBlankString | None = None
     content_hash: Sha256 | None = None
-    captured_at: StrictAwareDatetime | None = None
+    captured_at: PersistedTimestamp | None = None
     robots_allowed: StrictBool | None = None
 
 
@@ -190,12 +306,12 @@ class Evidence(StrictModel):
     candidate_id: NonBlankString
     page_url: AnyHttpUrl
     evidence_type: NonBlankString
-    observed_value: JsonValue
+    observed_value: ImmutableJson
     claim_status: ClaimStatus
     confidence: Confidence
-    captured_at: StrictAwareDatetime
+    captured_at: PersistedTimestamp
     content_hash: Sha256
-    evidence_urls: list[AnyHttpUrl] = Field(default_factory=list)
+    evidence_urls: ImmutableHttpUrlList = Field(default_factory=list)
     confidence_gap: NonBlankString | None = None
     source_owner: NonBlankString | None = None
     rights_status: NonBlankString | None = None
@@ -223,12 +339,18 @@ class AuditRecord(StrictModel):
     source_run_id: NonBlankString
     audit_version: NonBlankString
     status: NonBlankString
-    created_at: StrictAwareDatetime
-    completed_at: StrictAwareDatetime | None = None
-    evidence_ids: list[NonBlankString] = Field(default_factory=list)
-    score_names: list[NonBlankString] = Field(default_factory=list)
-    issue_ids: list[NonBlankString] = Field(default_factory=list)
+    created_at: PersistedTimestamp
+    completed_at: PersistedTimestamp | None = None
+    evidence_ids: ImmutableStringList = Field(default_factory=list)
+    score_names: ImmutableStringList = Field(default_factory=list)
+    issue_ids: ImmutableStringList = Field(default_factory=list)
     error: NonBlankString | None = None
+
+    @model_validator(mode="after")
+    def require_completion_after_creation(self) -> Self:
+        if self.completed_at is not None and self.completed_at < self.created_at:
+            raise ValueError("completed_at must not be before created_at")
+        return self
 
 
 class ScoreRecord(StrictModel):
@@ -237,12 +359,12 @@ class ScoreRecord(StrictModel):
     score_name: NonBlankString
     score_value: float = Field(strict=True, allow_inf_nan=False, ge=0, le=100)
     rubric_version: NonBlankString
-    inputs: dict[str, JsonValue]
-    evidence_ids: list[NonBlankString]
+    inputs: ImmutableJsonObject
+    evidence_ids: ImmutableStringList
     deterministic: StrictBool
     explanation_vi: NonBlankString
-    matched_rules: list[NonBlankString] = Field(default_factory=list)
-    unavailable_inputs: list[NonBlankString] = Field(default_factory=list)
+    matched_rules: ImmutableStringList = Field(default_factory=list)
+    unavailable_inputs: ImmutableStringList = Field(default_factory=list)
     confidence: Confidence | None = None
 
     @model_validator(mode="after")
@@ -261,7 +383,7 @@ class IssueRecord(StrictModel):
     candidate_id: NonBlankString
     title: NonBlankString
     severity: Severity
-    evidence_ids: list[NonBlankString] = Field(min_length=1)
+    evidence_ids: ImmutableStringList = Field(min_length=1)
     recommendation_vi: NonBlankString
     description: NonBlankString | None = None
     page_url: AnyHttpUrl | None = None
@@ -273,18 +395,9 @@ class ArtifactEnvelope(StrictModel):
     schema_version: NonBlankString
     generator_version: NonBlankString
     source_run_id: NonBlankString
-    created_at: StrictAwareDatetime
+    created_at: PersistedTimestamp
     content_hash: Sha256
-    payload: JsonValue
-
-    @field_validator("created_at")
-    @classmethod
-    def require_utc_created_at(cls, value: datetime) -> datetime:
-        """Keep artifact timestamps unambiguous and canonical."""
-
-        if value.utcoffset() != timedelta(0):
-            raise ValueError("artifact created_at must be UTC")
-        return value
+    payload: ImmutableJson
 
 
 class FeedbackEvent(StrictModel):
@@ -295,13 +408,13 @@ class FeedbackEvent(StrictModel):
     project_id: NonBlankString
     actor_id: NonBlankString
     action: NonBlankString
-    created_at: StrictAwareDatetime
+    created_at: PersistedTimestamp
     component_set_id: NonBlankString | None = None
     page_id: NonBlankString | None = None
     project_state: ProjectState | None = None
     page_state: PageState | None = None
     state_version: StrictNonNegativeInt | None = None
-    payload: dict[str, JsonValue] = Field(default_factory=dict)
+    payload: ImmutableJsonObject = Field(default_factory=dict)
 
 
 class DeliveryRecord(StrictModel):
@@ -328,8 +441,8 @@ class ComponentSet(StrictModel):
     channel_id: NonBlankString
     project_id: NonBlankString
     card_type: NonBlankString
-    allowed_actions: list[NonBlankString] = Field(min_length=1)
-    expires_at: StrictAwareDatetime
+    allowed_actions: ImmutableStringList = Field(min_length=1)
+    expires_at: PersistedTimestamp
     state_version: StrictNonNegativeInt
     project_state: ProjectState
     page_state: PageState | None = None
@@ -344,10 +457,20 @@ class StageRecord(StrictModel):
     stage_name: NonBlankString
     status: NonBlankString
     attempt_count: StrictNonNegativeInt = 0
-    started_at: StrictAwareDatetime | None = None
-    completed_at: StrictAwareDatetime | None = None
+    started_at: PersistedTimestamp | None = None
+    completed_at: PersistedTimestamp | None = None
     error: NonBlankString | None = None
-    checkpoint: dict[str, JsonValue] = Field(default_factory=dict)
+    checkpoint: ImmutableJsonObject = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_completion_after_start(self) -> Self:
+        if (
+            self.started_at is not None
+            and self.completed_at is not None
+            and self.completed_at < self.started_at
+        ):
+            raise ValueError("completed_at must not be before started_at")
+        return self
 
 
 class RunRecord(StrictModel):
@@ -355,14 +478,24 @@ class RunRecord(StrictModel):
 
     run_id: NonBlankString
     status: NonBlankString
-    started_at: StrictAwareDatetime
+    started_at: PersistedTimestamp
     idempotency_key: NonBlankString | None = None
     config_version: NonBlankString | None = None
-    completed_at: StrictAwareDatetime | None = None
+    completed_at: PersistedTimestamp | None = None
     current_stage: NonBlankString | None = None
     error: NonBlankString | None = None
-    stages: list[StageRecord] = Field(default_factory=list)
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    stages: Annotated[
+        list[StageRecord],
+        AfterValidator(_freeze_sequence),
+        PlainSerializer(_thaw_for_validation, return_type=list[StageRecord]),
+    ] = Field(default_factory=list)
+    metadata: ImmutableJsonObject = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_completion_after_start(self) -> Self:
+        if self.completed_at is not None and self.completed_at < self.started_at:
+            raise ValueError("completed_at must not be before started_at")
+        return self
 
 
 def export_schemas(output_dir: Path) -> None:
