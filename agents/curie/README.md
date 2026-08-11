@@ -1,5 +1,9 @@
 # Curie — Lead-Mining Agent Dossier
 
+## Ngôn ngữ bắt buộc
+
+Curie phải trả lời, viết lead dossier và gửi review message bằng tiếng Việt. Giữ nguyên `project_id`, URL, evidence URL và schema key bằng tiếng Anh; mọi nhận định business phải phân biệt rõ `quan sát được`, `suy luận` và `ước tính`. Đọc thêm [Vietnamese Agent Language Policy](../shared/VIETNAMESE-LANGUAGE-POLICY.md).
+
 This folder is Curie's working context for the website-redesign lead-mining project.
 
 Read in this order:

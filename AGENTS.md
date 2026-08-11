@@ -7,6 +7,10 @@ This repository is an operational runbook for a remote OpenClaw instance. Before
 3. Prefer `OPENCLAW_SSH_KEY` or the host's SSH agent. If a password prompt is required, use the interactive SSH prompt; never print, commit, or place the password in a command argument.
 4. Run the documented read-only health checks before diagnosing or changing anything.
 
+## Workflow language
+
+The OpenClaw workflow agents communicate with Minh and Wien in Vietnamese. Read [agents/shared/VIETNAMESE-LANGUAGE-POLICY.md](agents/shared/VIETNAMESE-LANGUAGE-POLICY.md) when working on `main`, `curie`, `website-brief`, or `project-pm`. Preserve command names, IDs, URLs, paths, state names, and JSON/YAML keys exactly.
+
 ## Operating rules
 
 - Treat the remote host as the source of truth. The dated status in README is only a last-known baseline.

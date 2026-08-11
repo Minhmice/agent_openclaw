@@ -115,4 +115,28 @@ The plan is being executed inline after Minh explicitly approved the complete wo
   ```
 
 - The candidate remains blocked at review until Minh explicitly approves it.
+
+## 2026-08-11 — Vietnamese language policy for all workflow agents
+
+### Design decision
+
+- `main`, `curie`, `website-brief`, and `project-pm` now use Vietnamese for all human-facing replies, Discord messages, reminders, reviews, handoffs, checklist text, and narrative Markdown artifacts.
+- Machine-facing interfaces remain stable: project IDs, commands, state names, channel IDs, actor IDs, URLs, file paths, artifact filenames, JSON/YAML keys, and evidence URLs are not translated.
+- Facts, inferences, estimates, and confidence gaps must remain explicitly separated in Vietnamese. Technical terms may stay in English in parentheses where that prevents ambiguity.
+
+### Work performed
+
+- Added [VIETNAMESE-LANGUAGE-POLICY.md](shared/VIETNAMESE-LANGUAGE-POLICY.md).
+- Updated the local root instructions, coordinator instructions, and the Curie, Website Brief, and Project PM dossiers.
+- Uploaded the policy to the remote main workflow workspace and each isolated agent context.
+- Appended direct language guards to the remote `AGENTS.md` and each isolated agent `ROLE.md`.
+
+### Verification
+
+- Smoke-tested all four remote agents with a no-write, no-Discord prompt.
+- `main`: replied `Tôi sẵn sàng giao tiếp bằng tiếng Việt.`
+- `curie`: replied `Tôi sẵn sàng giao tiếp bằng tiếng Việt.`
+- `website-brief`: replied `Đã sẵn sàng giao tiếp bằng tiếng Việt.`
+- `project-pm`: replied `Mình vừa khởi động và sẵn sàng giao tiếp bằng tiếng Việt.`
+- No downstream project state or Discord message was changed by the smoke test.
 - Evidence limitations are recorded: no visual screenshot audit, no analytics/performance data, no conversion data, and some public fetches were truncated by tool/rate limits.

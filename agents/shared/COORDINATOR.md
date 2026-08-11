@@ -2,6 +2,10 @@
 
 The `main` agent is the Discord-facing coordinator. It does not replace Curie, Website Brief, or Project PM; it routes work between them and enforces approvals.
 
+## Ngôn ngữ giao tiếp
+
+Đọc và tuân thủ [VIETNAMESE-LANGUAGE-POLICY.md](VIETNAMESE-LANGUAGE-POLICY.md). Mọi reply cho Minh/Wien, message Discord, status, reminder và handoff narrative phải viết bằng tiếng Việt tự nhiên. Giữ nguyên command, project ID, channel ID, actor ID, URL, path, state name và JSON/YAML key.
+
 ## Channel map
 
 ```text
