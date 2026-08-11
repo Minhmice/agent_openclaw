@@ -92,3 +92,27 @@ The plan is being executed inline after Minh explicitly approved the complete wo
 - Current Discord capability still has no native button/component support; typed commands remain canonical, with reactions only as a verified optional fallback.
 - The workflow is ready to receive a real Curie dossier. The next real action is to place a lead handoff in the review channel and wait for Minh's `/approve <project_id>` before Website Brief and PM processing.
 - Every future implementation or remote-change session must append a new dated section here and to the remote worklog.
+
+## 2026-08-11 — Curie discovery dry-run and review-channel test
+
+### Work performed
+
+- Ran Curie against public web sources for exactly one discovery candidate. Curie used `web_search` and `web_fetch` only; tool trace reported 28 calls with no tool failures.
+- Candidate: `vn-zamilsteel-20260811`, Zamil Steel Buildings Vietnam Co., Ltd, `https://zamilsteel.com.vn/`.
+- Curie produced an evidence-backed discovery dossier with public URLs, five website opportunity hypotheses, an inferred-only money opportunity, and explicit confidence gaps. No unsupported revenue number was used.
+- Created the remote project record in `review` state and stored the dossier under the project directory. No Website Brief or Project PM stage was started.
+- Posted the concise review card to channel `1536658476288450630`. Discord send succeeded with message ID `1536680224882950238`.
+- Removed the temporary local seed helper after execution; it contained no credential values and was not committed.
+
+### Review status
+
+- Awaiting Minh's decision. Valid next commands:
+
+  ```text
+  /approve vn-zamilsteel-20260811
+  /reject vn-zamilsteel-20260811 <reason>
+  /request-change vn-zamilsteel-20260811 <note>
+  ```
+
+- The candidate remains blocked at review until Minh explicitly approves it.
+- Evidence limitations are recorded: no visual screenshot audit, no analytics/performance data, no conversion data, and some public fetches were truncated by tool/rate limits.
