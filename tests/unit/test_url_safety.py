@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 
 import pytest
 
+from openclaw_web.crawl.robots import RobotsPolicy
 from openclaw_web.crawl.safety import (
     UnsafeTarget,
     normalize_url,
@@ -39,6 +40,12 @@ from openclaw_web.crawl.safety import (
         "http://0177.0.0.1/",
         "http://0x7f000001/",
         "http://127.1/",
+        "http://\N{CIRCLED DIGIT ONE}\N{CIRCLED DIGIT TWO}\N{CIRCLED DIGIT SEVEN}.\N{CIRCLED DIGIT ZERO}.\N{CIRCLED DIGIT ZERO}.\N{CIRCLED DIGIT ONE}/",
+        "http://\N{CIRCLED DIGIT ONE}\N{CIRCLED DIGIT ZERO}.\N{CIRCLED DIGIT ZERO}.\N{CIRCLED DIGIT ZERO}.\N{CIRCLED DIGIT ONE}/",
+        "http://\N{CIRCLED DIGIT ZERO}\N{CIRCLED DIGIT ONE}\N{CIRCLED DIGIT SEVEN}\N{CIRCLED DIGIT SEVEN}.\N{CIRCLED DIGIT ZERO}.\N{CIRCLED DIGIT ZERO}.\N{CIRCLED DIGIT ONE}/",
+        "http://[v1.fe]/",
+        "http://[example.com]/",
+        "http://[2606:4700:4700::1111/",
         "http://example.com\r\nHost:evil.test/",
     ],
 )
@@ -60,10 +67,31 @@ def test_unsafe_targets_are_rejected(url: str) -> None:
         ("https://b\N{LATIN SMALL LETTER U WITH DIAERESIS}cher.de/", "https://xn--bcher-kva.de/"),
         ("https://[2606:4700:4700::1111]:443", "https://[2606:4700:4700::1111]/"),
         ("http://93.184.216.34/path", "http://93.184.216.34/path"),
+        (
+            "http://\N{CIRCLED DIGIT NINE}\N{CIRCLED DIGIT THREE}.\N{CIRCLED DIGIT ONE}\N{CIRCLED DIGIT EIGHT}\N{CIRCLED DIGIT FOUR}.\N{CIRCLED DIGIT TWO}\N{CIRCLED DIGIT ONE}\N{CIRCLED DIGIT SIX}.\N{CIRCLED DIGIT THREE}\N{CIRCLED DIGIT FOUR}/",
+            "http://93.184.216.34/",
+        ),
+        ("https://example.com/a/%2e/b", "https://example.com/a/b"),
+        ("https://example.com/a/%2E/b", "https://example.com/a/b"),
+        ("https://example.com/a/.%2e/b", "https://example.com/b"),
+        ("https://example.com/a/%2e./b", "https://example.com/b"),
+        ("https://example.com/a/%2e%2e/b", "https://example.com/b"),
+        ("https://example.com/a/%252e/b", "https://example.com/a/%252e/b"),
+        ("https://example.com/a/%252e%252e/b", "https://example.com/a/%252e%252e/b"),
+        (
+            "https://example.com/a?next=.%2e/%2f",
+            "https://example.com/a?next=.%2E/%2F",
+        ),
     ],
 )
 def test_normalize_url_canonicalizes_safe_urls(url: str, expected: str) -> None:
     assert normalize_url(url) == expected
+
+
+def test_robots_policy_checks_the_browser_equivalent_normalized_path() -> None:
+    policy = RobotsPolicy.parse("User-agent: *\nDisallow: /private\n")
+
+    assert not policy.allowed("AgentOpenClawAudit/1.0", "https://example.com/public/%2e%2e/private")
 
 
 @pytest.mark.parametrize(

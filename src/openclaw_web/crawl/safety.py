@@ -19,6 +19,7 @@ AddressInput: TypeAlias = str | IPAddress
 
 _HEX_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
 _BAD_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_ENCODED_DOT = re.compile(r"%2E", re.IGNORECASE)
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _NUMERIC_HOST = re.compile(r"[0-9a-fx.]+\Z", re.IGNORECASE)
 _SPECIAL_HOST_SUFFIXES = (
@@ -104,6 +105,14 @@ def _remove_dot_segments(path: str) -> str:
     return normalized
 
 
+def _decode_dot_segment_escapes(path: str) -> str:
+    segments: list[str] = []
+    for segment in path.split("/"):
+        decoded = _ENCODED_DOT.sub(".", segment)
+        segments.append(decoded if decoded in {".", ".."} else segment)
+    return "/".join(segments)
+
+
 def _is_public_address(address: IPAddress) -> bool:
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         return _is_public_address(address.ipv4_mapped)
@@ -117,6 +126,16 @@ def _is_public_address(address: IPAddress) -> bool:
     )
 
 
+def _normalize_literal_host(host: str) -> tuple[str, IPAddress] | None:
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if not _is_public_address(literal):
+        raise UnsafeTarget("URL contains a non-public literal address")
+    return literal.compressed, literal
+
+
 def _normalize_host(host: str) -> tuple[str, IPAddress | None]:
     if not host or "%" in host:
         raise UnsafeTarget("URL host is missing or contains an encoded authority component")
@@ -124,15 +143,9 @@ def _normalize_host(host: str) -> tuple[str, IPAddress | None]:
     if not host:
         raise UnsafeTarget("URL host is missing")
 
-    try:
-        literal = ipaddress.ip_address(host)
-    except ValueError:
-        literal = None
-
+    literal = _normalize_literal_host(host)
     if literal is not None:
-        if not _is_public_address(literal):
-            raise UnsafeTarget("URL contains a non-public literal address")
-        return literal.compressed, literal
+        return literal
 
     if host[0].isdigit() and _NUMERIC_HOST.fullmatch(host):
         raise UnsafeTarget("URL contains an ambiguous numeric hostname")
@@ -140,6 +153,11 @@ def _normalize_host(host: str) -> tuple[str, IPAddress | None]:
         ascii_host = host.encode("idna").decode("ascii").lower()
     except UnicodeError as error:
         raise UnsafeTarget("URL contains an invalid internationalized hostname") from error
+    literal = _normalize_literal_host(ascii_host)
+    if literal is not None:
+        return literal
+    if ascii_host[0].isdigit() and _NUMERIC_HOST.fullmatch(ascii_host):
+        raise UnsafeTarget("URL contains an ambiguous numeric hostname")
     if len(ascii_host) > 253:
         raise UnsafeTarget("URL hostname is too long")
     labels = ascii_host.split(".")
@@ -169,6 +187,11 @@ def _split_url(url: str) -> SplitResult:
         raise UnsafeTarget("URL userinfo is not allowed")
     if "%" in parsed.netloc:
         raise UnsafeTarget("URL authority may not contain percent escapes")
+    if parsed.netloc.startswith("["):
+        try:
+            ipaddress.IPv6Address(parsed.hostname)
+        except ValueError as error:
+            raise UnsafeTarget("URL bracketed host must be a valid IPv6 literal") from error
     if parsed.netloc.endswith(":"):
         raise UnsafeTarget("URL port is malformed")
     return parsed
@@ -198,7 +221,7 @@ def normalize_url(url: str) -> str:
     path = parsed.path or "/"
     if not path.startswith("/"):
         raise UnsafeTarget("URL path is ambiguous")
-    path = _remove_dot_segments(_normalize_escapes(path))
+    path = _remove_dot_segments(_decode_dot_segment_escapes(_normalize_escapes(path)))
     query = _normalize_escapes(parsed.query)
     return urlunsplit((scheme, authority, path, query, ""))
 
