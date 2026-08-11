@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -10,6 +11,10 @@ from pathlib import Path
 SCRIPT = Path(__file__).parents[1] / "agents" / "shared" / "workflow-coordinator.py"
 MINH = "620891893659598850"
 WIEN = "859783610625556480"
+
+spec = importlib.util.spec_from_file_location("workflow_coordinator", SCRIPT)
+coordinator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(coordinator)
 
 
 class WorkflowCoordinatorTests(unittest.TestCase):
@@ -80,6 +85,40 @@ class WorkflowCoordinatorTests(unittest.TestCase):
         due = json.loads(result.stdout)
         self.assertEqual(due[0]["project_id"], "acme-demo")
         self.assertEqual(due[0]["pending_pages"][0]["slug"], "homepage")
+
+    def test_reminder_message_is_readable_for_review_without_pages(self):
+        project = {
+            "project_id": "acme-demo",
+            "business_name": "Acme Demo",
+            "status": "review",
+            "last_update": "2026-08-11T10:18:27+00:00",
+            "pages": [],
+        }
+        message = coordinator.format_reminder(project, [])
+        self.assertIn("NHẮC VIỆC", message)
+        self.assertIn("Acme Demo", message)
+        self.assertIn("/approve acme-demo", message)
+        self.assertNotIn("None", message)
+
+    def test_reminder_message_groups_page_action_details(self):
+        project = {
+            "project_id": "acme-demo",
+            "business_name": "Acme Demo",
+            "status": "task",
+            "last_update": "2026-08-11T10:18:27+00:00",
+            "pages": [],
+        }
+        pending = [{
+            "slug": "homepage",
+            "status": "content-draft",
+            "owner": "Minh",
+            "next_action": "Hoàn thiện hero và CTA",
+            "blocked_reason": None,
+        }]
+        message = coordinator.format_reminder(project, pending)
+        self.assertIn("HOMEPAGE", message)
+        self.assertIn("Hoàn thiện hero và CTA", message)
+        self.assertIn("/page-status acme-demo homepage", message)
 
 
 if __name__ == "__main__":

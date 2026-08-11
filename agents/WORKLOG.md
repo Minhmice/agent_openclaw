@@ -181,3 +181,24 @@ When Minh writes a Vietnamese message such as `oke thử cho tìm một con khá
 
 - Official OpenClaw sub-agent documentation: `sessions_spawn` is non-blocking, completion returns to the requester, cleanup delete archives after announce, and channel delivery parameters are not part of `sessions_spawn`.
 - Official Discord documentation: `openclaw message send --channel discord --target channel:<id>` is the explicit delivery path, and media attachments can be sent separately from the text post.
+
+## 2026-08-11 — Deterministic PM reminder dispatch and task-channel formatting
+
+### Root cause
+
+- The reminder cron was an `agentTurn`. Even with a prompt telling Project PM to run the existing coordinator file, the model could still attempt an inline Python heredoc. Run history confirmed intermittent success and the reported `python inline script (heredoc)` failure.
+
+### Fix
+
+- Added `reminder-dispatch` to `workflow-coordinator.py`; it reads the canonical state, formats Vietnamese reminders, and sends them directly with `openclaw message send`.
+- Switched cron `project-pm-active-reminders` (`9b083499-7412-47fb-bdaa-39083da68e84`) from `agentTurn` to `command`, with `agentId: null`, `delivery.mode: none`, and a fixed command invoking `reminder-dispatch`.
+- Kept Project PM available for project/page checklist work; only periodic reminder delivery is deterministic and model-free.
+- Added a Discord-friendly visual format: header, business name, project/status line, grouped action details, next step, exact commands, and a quiet footer. Review-only projects without pages get approve/request-change actions instead of a confusing empty page checklist.
+
+### Verification
+
+- Local formatter/state tests: `5/5` passed.
+- Remote dry-run produced the expected Vietnamese message for `vn-zamilsteel-20260811`.
+- Manual cron execution returned `status: ok`, `summary: REMINDERS_SENT=1`, `exitCode: 0`, with no model/agent execution.
+- Task channel received formatted message ID `1536691948587327592`.
+- Old heredoc failure remains only as historical message/run history; future cron runs use the command payload.

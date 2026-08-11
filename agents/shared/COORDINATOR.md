@@ -92,3 +92,15 @@ openclaw agent --agent project-pm --message "Create/update the PM record from /h
 ## Worklog
 
 Append a concise event to `/home/minhmice/.openclaw/workflow/WORKLOG.md` after every handoff, approval, page transition, reminder decision, error, and finalization. Never write secrets or message/session contents to the worklog.
+
+## Reminder implementation
+
+The 30-minute cron uses the deterministic command below; it does not ask a model to write or execute an inline script:
+
+```bash
+OPENCLAW_WORKFLOW_ROOT=/home/minhmice/.openclaw/workflow \
+python3 /home/minhmice/.openclaw/workspace/workflow/workflow-coordinator.py \
+  reminder-dispatch --stale-minutes 30
+```
+
+`reminder-dispatch` sends formatted Vietnamese messages directly to the task channel and stays silent when no reminder is due.

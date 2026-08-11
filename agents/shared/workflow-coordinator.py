@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -286,12 +287,11 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(json.dumps(load(args.project_id), ensure_ascii=False, indent=2))
 
 
-def cmd_due(args: argparse.Namespace) -> None:
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=args.stale_minutes)
+def collect_due(stale_minutes: int) -> list[dict[str, Any]]:
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=stale_minutes)
     due: list[dict[str, Any]] = []
     if not PROJECTS.exists():
-        print("[]")
-        return
+        return due
     for path in sorted(PROJECTS.glob("*/project.json")):
         with path.open(encoding="utf-8") as handle:
             project = json.load(handle)
@@ -311,7 +311,94 @@ def cmd_due(args: argparse.Namespace) -> None:
         ]
         if stale or pending:
             due.append({"project_id": project.get("project_id"), "status": project.get("status"), "last_update": last, "pending_pages": pending})
-    print(json.dumps(due, ensure_ascii=False, indent=2))
+    return due
+
+
+def format_reminder(project: dict[str, Any], pending_pages: list[dict[str, Any]]) -> str:
+    project_id = project.get("project_id", "unknown")
+    business_name = project.get("business_name") or "Doanh nghiệp chưa đặt tên"
+    status = project.get("status") or "unknown"
+    lines = [
+        "🔔 **NHẮC VIỆC PROJECT PM**",
+        f"**{business_name}**",
+        f"`{project_id}` · trạng thái: `{status}`",
+        "",
+    ]
+    if not pending_pages:
+        lines.extend([
+            "**Đang chờ xử lý review**",
+            "Project chưa có page/checklist để PM theo dõi chi tiết.",
+            "",
+            "**Bước tiếp theo**",
+            f"1. Duyệt lead: `/approve {project_id}`",
+            f"2. Yêu cầu chỉnh: `/request-change {project_id} <note>`",
+        ])
+    else:
+        lines.append("**Các việc cần xử lý**")
+        for page in pending_pages:
+            slug = str(page.get("slug") or "unknown")
+            title = slug.replace("-", " ").upper()
+            page_status = page.get("status") or "chưa có trạng thái"
+            owner = page.get("owner") or "chưa assign"
+            lines.append(f"• **{title}** · `{page_status}` · phụ trách: **{owner}**")
+            if page.get("blocked_reason"):
+                lines.append(f"  ↳ Blocker: {page['blocked_reason']}")
+            if page.get("next_action"):
+                lines.append(f"  ↳ Việc tiếp theo: {page['next_action']}")
+            lines.append(f"  ↳ Cập nhật cuối: `{project.get('last_update') or 'chưa có'}`")
+            lines.append(f"  ↳ Xem page: `/page-status {project_id} {slug}`")
+        lines.extend([
+            "",
+            "**Lệnh nhanh**",
+            f"`/status {project_id}` · `/page-done {project_id} <page_slug>` · `/block {project_id} <page_slug> <reason>`",
+        ])
+    lines.extend(["", "_PM sẽ nhắc lại khi project còn action cụ thể hoặc bị stale._"])
+    return "\n".join(lines)[:1900]
+
+
+def cmd_due(args: argparse.Namespace) -> None:
+    print(json.dumps(collect_due(args.stale_minutes), ensure_ascii=False, indent=2))
+
+
+def cmd_reminder_dispatch(args: argparse.Namespace) -> None:
+    reminders = collect_due(args.stale_minutes)
+    if not reminders:
+        print("NO_REMINDERS")
+        return
+    failures = 0
+    for item in reminders:
+        project = load(item["project_id"])
+        message = format_reminder(project, item["pending_pages"])
+        if args.dry_run:
+            print(message)
+            print("\n---")
+            continue
+        result = subprocess.run(
+            [
+                "openclaw",
+                "message",
+                "send",
+                "--channel",
+                "discord",
+                "--target",
+                f"channel:{TASK_CHANNEL}",
+                "--message",
+                message,
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+        if result.returncode != 0:
+            failures += 1
+            log("reminder-send-error", item["project_id"], result.stderr.strip()[:400])
+        else:
+            log("reminder-sent", item["project_id"], f"channel={TASK_CHANNEL}")
+    if failures:
+        raise SystemExit(f"reminder dispatch failed for {failures} project(s)")
+    print(f"REMINDERS_SENT={len(reminders)}")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -365,6 +452,10 @@ def parser() -> argparse.ArgumentParser:
     due = sub.add_parser("due-reminders")
     due.add_argument("--stale-minutes", type=int, default=30)
     due.set_defaults(func=cmd_due)
+    dispatch = sub.add_parser("reminder-dispatch")
+    dispatch.add_argument("--stale-minutes", type=int, default=30)
+    dispatch.add_argument("--dry-run", action="store_true")
+    dispatch.set_defaults(func=cmd_reminder_dispatch)
     return root
 
 
