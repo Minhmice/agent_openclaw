@@ -731,6 +731,12 @@ def test_generated_schemas_declare_draft_2020_12_and_are_valid(tmp_path: Path) -
         pytest.param("http://localhost/", True, id="localhost"),
         pytest.param("http://127.0.0.1/", True, id="ipv4"),
         pytest.param("http://[::1]/", True, id="bracketed-ipv6"),
+        pytest.param(
+            "http://[::ffff:192.0.2.1]/",
+            True,
+            id="bracketed-ipv6-with-ipv4-suffix",
+        ),
+        pytest.param("https://example.com:0/", True, id="zero-port"),
         pytest.param("https://example.com:1/", True, id="lowest-port"),
         pytest.param("https://example.com:65535/", True, id="highest-port"),
         pytest.param(
@@ -738,12 +744,25 @@ def test_generated_schemas_declare_draft_2020_12_and_are_valid(tmp_path: Path) -
             True,
             id="path-query-fragment",
         ),
+        pytest.param(
+            "http://example.com/" + "a" * 2100,
+            True,
+            id="long-any-http-url",
+        ),
         pytest.param("HTTP://example.com/path", True, id="uppercase-http"),
         pytest.param("hTtPs://example.com/path", True, id="mixed-case-https"),
         pytest.param("http://", False, id="missing-authority"),
         pytest.param("http:///path", False, id="missing-host"),
         pytest.param("http://exa mple.com", False, id="authority-whitespace"),
+        pytest.param("http://example.com/\n", False, id="trailing-whitespace"),
         pytest.param("http://[::1", False, id="unbalanced-bracketed-ipv6"),
+        pytest.param("http://[:::]/", False, id="invalid-bracketed-ipv6-colons"),
+        pytest.param("http://[.]/", False, id="invalid-bracketed-ipv6-dot"),
+        pytest.param("http://%zz/", False, id="invalid-host-percent-escape"),
+        pytest.param("http://exa%mple.com/", False, id="invalid-domain-percent-escape"),
+        pytest.param("http://example.com\\path", False, id="authority-backslash"),
+        pytest.param("http://example.com/%zz", False, id="invalid-path-percent-escape"),
+        pytest.param("http://example.com:65536", False, id="port-above-maximum"),
         pytest.param("http://example.com:99999", False, id="port-overflow"),
         pytest.param("ftp://example.com/path", False, id="ftp"),
         pytest.param("file:///tmp/page", False, id="file"),
@@ -764,8 +783,9 @@ def test_exported_url_schemas_match_pydantic_web_url_validation(
 
     for case_id, model, filename in URL_FIELD_CASES:
         payload = _url_field_payload(case_id, url)
+        record: Any | None = None
         try:
-            model.model_validate_json(json.dumps(payload))
+            record = model.model_validate_json(json.dumps(payload))
         except ValidationError:
             pydantic_accepts = False
         else:
@@ -785,6 +805,15 @@ def test_exported_url_schemas_match_pydantic_web_url_validation(
         assert schema_accepts is expected_acceptance, case_id
         assert pattern_accepts is expected_acceptance, case_id
         assert schema_accepts is pydantic_accepts, case_id
+        assert pattern_accepts is pydantic_accepts, case_id
+
+        if record is not None:
+            canonical_payload = record.model_dump(mode="json")
+            Draft202012Validator(schemas[filename]).validate(canonical_payload)
+            Draft202012Validator(
+                schemas[filename],
+                format_checker=FormatChecker(),
+            ).validate(canonical_payload)
 
 
 @pytest.mark.parametrize(

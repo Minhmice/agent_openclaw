@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -12,11 +13,13 @@ from pydantic import (
     AnyHttpUrl,
     AwareDatetime,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     JsonValue,
     PlainSerializer,
     StringConstraints,
+    WithJsonSchema,
     model_validator,
 )
 
@@ -27,6 +30,67 @@ NonBlankString = Annotated[
 Sha256 = Annotated[
     str,
     StringConstraints(pattern=r"^[0-9a-f]{64}$", strict=True),
+]
+
+_IPV6_HEXTET_PATTERN = r"[0-9A-Fa-f]{1,4}"
+_IPV4_OCTET_PATTERN = r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
+_IPV4_ADDRESS_PATTERN = rf"(?:{_IPV4_OCTET_PATTERN}\.){{3}}{_IPV4_OCTET_PATTERN}"
+_IPV6_LAST_32_BITS_PATTERN = (
+    rf"(?:{_IPV6_HEXTET_PATTERN}:{_IPV6_HEXTET_PATTERN}|{_IPV4_ADDRESS_PATTERN})"
+)
+_IPV6_ADDRESS_PATTERN = (
+    rf"(?:"
+    rf"(?:{_IPV6_HEXTET_PATTERN}:){{6}}{_IPV6_LAST_32_BITS_PATTERN}|"
+    rf"::(?:{_IPV6_HEXTET_PATTERN}:){{5}}{_IPV6_LAST_32_BITS_PATTERN}|"
+    rf"(?:{_IPV6_HEXTET_PATTERN})?::"
+    rf"(?:{_IPV6_HEXTET_PATTERN}:){{4}}{_IPV6_LAST_32_BITS_PATTERN}|"
+    rf"(?:(?:{_IPV6_HEXTET_PATTERN}:){{0,1}}{_IPV6_HEXTET_PATTERN})?::"
+    rf"(?:{_IPV6_HEXTET_PATTERN}:){{3}}{_IPV6_LAST_32_BITS_PATTERN}|"
+    rf"(?:(?:{_IPV6_HEXTET_PATTERN}:){{0,2}}{_IPV6_HEXTET_PATTERN})?::"
+    rf"(?:{_IPV6_HEXTET_PATTERN}:){{2}}{_IPV6_LAST_32_BITS_PATTERN}|"
+    rf"(?:(?:{_IPV6_HEXTET_PATTERN}:){{0,3}}{_IPV6_HEXTET_PATTERN})?::"
+    rf"{_IPV6_HEXTET_PATTERN}:{_IPV6_LAST_32_BITS_PATTERN}|"
+    rf"(?:(?:{_IPV6_HEXTET_PATTERN}:){{0,4}}{_IPV6_HEXTET_PATTERN})?::"
+    rf"{_IPV6_LAST_32_BITS_PATTERN}|"
+    rf"(?:(?:{_IPV6_HEXTET_PATTERN}:){{0,5}}{_IPV6_HEXTET_PATTERN})?::"
+    rf"{_IPV6_HEXTET_PATTERN}|"
+    rf"(?:(?:{_IPV6_HEXTET_PATTERN}:){{0,6}}{_IPV6_HEXTET_PATTERN})?::"
+    rf")"
+)
+_WEB_URL_PORT_PATTERN = (
+    r"0*(?:0|[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|"
+    r"65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])"
+)
+# This single ECMA-262-compatible policy is used for raw model validation and
+# emitted verbatim by the WebUrl JSON Schema. AnyHttpUrl remains authoritative
+# for detailed URL parsing and canonicalization after this structural gate.
+WEB_URL_PATTERN = (
+    r"^[Hh][Tt][Tt][Pp][Ss]?://"
+    r"(?:(?:%[0-9A-Fa-f]{2}|[^%\s\\/?#@])*@)?"
+    rf"(?:\[{_IPV6_ADDRESS_PATTERN}\]|(?:%[0-9A-Fa-f]{{2}}|[^%\s\\/?#:@\[\]])+)"
+    rf"(?::{_WEB_URL_PORT_PATTERN})?"
+    r"(?:[/?#](?:%[0-9A-Fa-f]{2}|[^%\s\\])*)?(?![\s\S])"
+)
+_WEB_URL_PATTERN_RE = re.compile(WEB_URL_PATTERN)
+
+
+def _validate_web_url_structure(value: Any) -> Any:
+    if isinstance(value, str | AnyHttpUrl) and _WEB_URL_PATTERN_RE.fullmatch(str(value)) is None:
+        raise ValueError("URL must satisfy the canonical HTTP(S) structural policy")
+    return value
+
+
+WebUrl = Annotated[
+    AnyHttpUrl,
+    BeforeValidator(_validate_web_url_structure),
+    WithJsonSchema(
+        {
+            "type": "string",
+            "format": "uri",
+            "minLength": 1,
+            "pattern": WEB_URL_PATTERN,
+        }
+    ),
 ]
 
 
@@ -115,9 +179,9 @@ ImmutableJsonObject = Annotated[
     PlainSerializer(_thaw_for_validation, return_type=dict[str, JsonValue]),
 ]
 ImmutableHttpUrlList = Annotated[
-    list[AnyHttpUrl],
+    list[WebUrl],
     AfterValidator(_freeze_sequence),
-    PlainSerializer(_thaw_for_validation, return_type=list[AnyHttpUrl]),
+    PlainSerializer(_thaw_for_validation, return_type=list[WebUrl]),
 ]
 ImmutableStringList = Annotated[
     list[NonBlankString],
@@ -229,9 +293,9 @@ class StrictModel(BaseModel):
 class CandidateSeed(StrictModel):
     """Raw candidate discovered from an external source."""
 
-    url: AnyHttpUrl
+    url: WebUrl
     business_name: NonBlankString
-    source_url: AnyHttpUrl
+    source_url: WebUrl
     source_type: NonBlankString
     discovered_at: PersistedTimestamp
     seed_id: NonBlankString | None = None
@@ -256,7 +320,7 @@ class Candidate(StrictModel):
     name: NonBlankString
     state: CandidateState = CandidateState.DISCOVERED
     seed_id: NonBlankString | None = None
-    website_url: AnyHttpUrl | None = None
+    website_url: WebUrl | None = None
     canonical_domain: NonBlankString | None = None
     address: NonBlankString | None = None
     phone: NonBlankString | None = None
@@ -290,7 +354,7 @@ class PageRecord(StrictModel):
 
     page_id: NonBlankString
     candidate_id: NonBlankString
-    page_url: AnyHttpUrl
+    page_url: WebUrl
     page_type: NonBlankString
     status_code: int | None = Field(default=None, strict=True, ge=100, le=599)
     title: NonBlankString | None = None
@@ -304,7 +368,7 @@ class Evidence(StrictModel):
 
     evidence_id: NonBlankString
     candidate_id: NonBlankString
-    page_url: AnyHttpUrl
+    page_url: WebUrl
     evidence_type: NonBlankString
     observed_value: ImmutableJson
     claim_status: ClaimStatus
@@ -386,7 +450,7 @@ class IssueRecord(StrictModel):
     evidence_ids: ImmutableStringList = Field(min_length=1)
     recommendation_vi: NonBlankString
     description: NonBlankString | None = None
-    page_url: AnyHttpUrl | None = None
+    page_url: WebUrl | None = None
 
 
 class ArtifactEnvelope(StrictModel):
@@ -430,7 +494,7 @@ class DeliveryRecord(StrictModel):
     attempt_count: StrictNonNegativeInt = 0
     last_error: NonBlankString | None = None
     message_id: NonBlankString | None = None
-    message_url: AnyHttpUrl | None = None
+    message_url: WebUrl | None = None
 
 
 class ComponentSet(StrictModel):
