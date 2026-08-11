@@ -160,3 +160,24 @@ When Minh writes a Vietnamese message such as `oke thử cho tìm một con khá
 - Added [discuss-intents.md](shared/contracts/discuss-intents.md) and updated coordinator instructions in local and remote main workspaces.
 - Smoke-tested the simulated event with `main`: it classified `new-curie-discovery`, routed exactly one isolated Curie run, kept the candidate unapproved, skipped Website Brief/PM, and targeted review channel `1536658476288450630`.
 - The smoke test did not call Curie, write project state, or send Discord.
+
+## 2026-08-11 — Curie handoff reliability and detailed image-aware reporting
+
+### Finding
+
+- A real `discuss` trigger spawned Curie but surfaced `cleanup delete failed`. OpenClaw documentation confirms sub-agent completion returns to the requester session, while `cleanup: "delete"` is best-effort archive cleanup after announce; cleanup failure must not be treated as Curie failure.
+- The previous routing did not explicitly tell `main` to post Curie output to review or acknowledge completion in `discuss`.
+
+### Design change
+
+- Use `cleanup: "keep"` or omit cleanup for Curie discovery.
+- Wait for completion with `sessions_yield`, then let `main` explicitly send the review post to `shit-that-could-cooking` (`1536658476288450630`).
+- After successful review delivery, send a Vietnamese acknowledgment to `discuss` (`1533645084229369996`) with project ID and review location.
+- Keep Website Brief and Project PM blocked until Minh approves.
+- Add a detailed Curie report contract with page-level audit, issue severity, evidence matrix, confidence gaps, and first-party image evidence.
+- Attach up to five defensible public images when available; otherwise record `image_evidence: []` and explain why.
+
+### Research basis
+
+- Official OpenClaw sub-agent documentation: `sessions_spawn` is non-blocking, completion returns to the requester, cleanup delete archives after announce, and channel delivery parameters are not part of `sessions_spawn`.
+- Official Discord documentation: `openclaw message send --channel discord --target channel:<id>` is the explicit delivery path, and media attachments can be sent separately from the text post.

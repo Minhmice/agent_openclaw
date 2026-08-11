@@ -59,3 +59,5 @@ The reminder job runs every 30 minutes but only sends when an active page has a 
 ## Natural-language discovery
 
 The Vietnamese intent contract for `discuss` is [discuss-intents.md](discuss-intents.md). It is not an approval command; it only requests one fresh Curie discovery run and leaves the resulting project in `review`.
+
+The detailed Curie output and image rules are in [curie-report.md](curie-report.md). Delivery is a two-message sequence: full/compact review post to `1536658476288450630`, then Vietnamese acknowledgment in `1533645084229369996`.
