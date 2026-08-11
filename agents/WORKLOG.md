@@ -2,6 +2,24 @@
 
 This file records every implementation/review session for the OpenClaw multi-agent workflow. Never put passwords, tokens, private keys, cookies, provider secrets, or session content here.
 
+## 2026-08-11 — Diagnose model idle timeout
+
+### Evidence
+
+- OpenClaw reported: `LLM request timed out. The model did not produce a response before the model idle timeout.`
+- No provider ID, primary model, current timeout, or run-specific timeout was available in this local documentation-only repository.
+
+### Root-cause boundary
+
+- The failure can occur at the provider request timeout, `agents.defaults.timeoutSeconds`, or a lower cron/run-specific ceiling.
+- The correct provider-specific timeout cannot be selected safely until the live effective model/provider is inspected.
+
+### Planned narrow fix
+
+- Read the primary model, provider ID, current provider timeout, agent default timeout, subagent timeout, and cron timeout using redacted diagnostics.
+- Raise `models.providers.<providerId>.timeoutSeconds` first for the affected slow provider, then raise only the lower outer ceiling if necessary.
+- Keep fallback routing and security policy unchanged.
+
 ## 2026-08-11 — Diagnose Discord exec approval denial for Wien
 
 ### Evidence

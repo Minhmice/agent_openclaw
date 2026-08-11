@@ -254,6 +254,23 @@ Discuss and approve each item separately:
 
 Do not expose port `18789` publicly just to make the CLI convenient. Keep the gateway local-only unless there is a specific, reviewed remote-control requirement and a trusted-proxy/auth design.
 
+### Model request timeout
+
+For `LLM request timed out` or `model idle timeout`, inspect the effective primary model and provider before changing values. The provider timeout covers connection, headers, body streaming, request abort handling, and the provider's model-stream idle watchdog; `agents.defaults.timeoutSeconds` or a run-specific timeout can still be a lower ceiling.
+
+Use a redacted diagnostic that never prints API keys:
+
+```bash
+openclaw config get agents.defaults.model.primary
+openclaw config get agents.defaults.timeoutSeconds
+openclaw config get agents.defaults.subagents.runTimeoutSeconds
+openclaw config get cron
+```
+
+Then inspect only the selected provider's `baseUrl`, model IDs, and timeout value. For a slow local/self-hosted provider, set `models.providers.<providerId>.timeoutSeconds` first, and keep the agent/run timeout at least as high. A reasonable starting point is `300` seconds for a slow self-hosted provider; choose a larger value only when observed latency justifies it. Do not set a global unlimited timeout or switch to a faster model without checking the configured provider and fallback chain.
+
+The official timeout guidance is in the [OpenClaw agent-loop documentation](https://docs.openclaw.ai/agent-loop) and [model-provider documentation](https://docs.openclaw.ai/concepts/model-providers).
+
 ## Troubleshooting
 
 ### Environment variables missing
