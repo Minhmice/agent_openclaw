@@ -1,11 +1,13 @@
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfoNotFoundError
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
+from openclaw_web import settings
 from openclaw_web.settings import load_market
 
 CANONICAL_MARKET: dict[str, Any] = {
@@ -110,6 +112,12 @@ def test_market_rejects_out_of_range_numbers(
         pytest.param(("center", "latitude"), "21.0285", id="coerced-latitude"),
         pytest.param(("center", "longitude"), "105.8542", id="coerced-longitude"),
         pytest.param(("radius_km",), "80", id="coerced-radius"),
+        pytest.param(("center", "latitude"), True, id="boolean-true-latitude"),
+        pytest.param(("center", "latitude"), False, id="boolean-false-latitude"),
+        pytest.param(("center", "longitude"), True, id="boolean-true-longitude"),
+        pytest.param(("center", "longitude"), False, id="boolean-false-longitude"),
+        pytest.param(("radius_km",), True, id="boolean-true-radius"),
+        pytest.param(("radius_km",), False, id="boolean-false-radius"),
         pytest.param(("center", "latitude"), float("nan"), id="nan-latitude"),
         pytest.param(("center", "longitude"), float("inf"), id="infinite-longitude"),
         pytest.param(("radius_km",), float("-inf"), id="infinite-radius"),
@@ -126,6 +134,19 @@ def test_market_rejects_non_strict_or_non_finite_numbers(
 def test_market_rejects_unrecognized_timezone(tmp_path: Path, timezone: str) -> None:
     with pytest.raises(ValidationError):
         _load_payload(tmp_path, _with_value(("timezone",), timezone))
+
+
+def test_market_reports_how_to_restore_a_missing_timezone_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable_zoneinfo(key: str) -> None:
+        raise ZoneInfoNotFoundError(key)
+
+    monkeypatch.setattr(settings, "ZoneInfo", unavailable_zoneinfo)
+    monkeypatch.setattr(settings, "available_timezones", set)
+
+    with pytest.raises(ValidationError, match="install tzdata"):
+        _load_payload(tmp_path, CANONICAL_MARKET)
 
 
 @pytest.mark.parametrize("path", [("unknown",), ("center", "unknown")])

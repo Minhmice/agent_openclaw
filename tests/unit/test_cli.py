@@ -36,6 +36,12 @@ def test_cli_registers_exactly_the_approved_command_set() -> None:
     assert set(command.commands) == set(COMMANDS)
 
 
+def test_cli_help_succeeds() -> None:
+    result = CliRunner().invoke(cli.app, ["--help"])
+
+    assert result.exit_code == 0
+
+
 @pytest.mark.parametrize("command", COMMANDS)
 def test_each_default_command_reports_its_missing_dependency(command: str) -> None:
     result = CliRunner().invoke(cli.app, [command])
