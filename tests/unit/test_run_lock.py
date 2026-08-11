@@ -72,6 +72,91 @@ def test_lock_renew_and_release_require_matching_owner(tmp_path: Path) -> None:
     assert repo.acquire_run_lock("schedule", "owner-b", now + timedelta(seconds=71), 60)
 
 
+def test_same_owner_stale_clock_cannot_move_lease_backwards(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    now = datetime(2026, 8, 12, tzinfo=UTC)
+
+    assert repo.acquire_run_lock("schedule", "owner-a", now, 300)
+    before = tuple(
+        db.execute(
+            "SELECT acquired_at, lease_expires_at FROM run_locks WHERE lock_key = ?",
+            ("schedule",),
+        ).fetchone()
+    )
+
+    assert not repo.acquire_run_lock(
+        "schedule", "owner-a", now - timedelta(seconds=1), 600
+    )
+    assert not repo.renew_run_lock(
+        "schedule", "owner-a", now - timedelta(seconds=1), 600
+    )
+    after = tuple(
+        db.execute(
+            "SELECT acquired_at, lease_expires_at FROM run_locks WHERE lock_key = ?",
+            ("schedule",),
+        ).fetchone()
+    )
+    assert after == before
+
+
+def test_same_owner_shorter_renewal_is_a_safe_noop(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    now = datetime(2026, 8, 12, tzinfo=UTC)
+
+    assert repo.acquire_run_lock("schedule", "owner-a", now, 300)
+    assert not repo.renew_run_lock("schedule", "owner-a", now + timedelta(seconds=10), 60)
+    assert not repo.acquire_run_lock("schedule", "owner-a", now + timedelta(seconds=10), 60)
+    row = db.execute(
+        "SELECT acquired_at, lease_expires_at FROM run_locks WHERE lock_key = 'schedule'"
+    ).fetchone()
+    assert row["acquired_at"] == "2026-08-12T00:00:00.000000Z"
+    assert row["lease_expires_at"] == "2026-08-12T00:05:00.000000Z"
+
+
+def test_two_connections_reject_stale_owner_updates_and_fence_takeover_at_boundary(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite"
+    first = connect(path)
+    migrate(first)
+    second = connect(path)
+    first_repo = Repository(first)
+    second_repo = Repository(second)
+    now = datetime(2026, 8, 12, tzinfo=UTC)
+
+    assert first_repo.acquire_run_lock("schedule", "owner-a", now, 60)
+    assert second_repo.renew_run_lock("schedule", "owner-a", now + timedelta(seconds=10), 120)
+    expected = tuple(
+        second.execute(
+            "SELECT owner, acquired_at, lease_expires_at FROM run_locks WHERE lock_key = ?",
+            ("schedule",),
+        ).fetchone()
+    )
+
+    assert not first_repo.acquire_run_lock(
+        "schedule", "owner-a", now + timedelta(seconds=5), 500
+    )
+    assert not first_repo.renew_run_lock(
+        "schedule", "owner-a", now + timedelta(seconds=5), 500
+    )
+    assert tuple(
+        first.execute(
+            "SELECT owner, acquired_at, lease_expires_at FROM run_locks WHERE lock_key = ?",
+            ("schedule",),
+        ).fetchone()
+    ) == expected
+
+    expiry = now + timedelta(seconds=130)
+    assert not first_repo.acquire_run_lock("schedule", "owner-b", expiry, 60)
+    assert first_repo.acquire_run_lock(
+        "schedule", "owner-b", expiry + timedelta(microseconds=1), 60
+    )
+
+
 @pytest.mark.parametrize("lease_seconds", [0, -1, True])
 def test_lock_rejects_invalid_lease(tmp_path: Path, lease_seconds: int) -> None:
     db = connect(tmp_path / "state.sqlite")

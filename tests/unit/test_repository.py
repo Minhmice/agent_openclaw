@@ -1,16 +1,22 @@
 import json
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, get_ident
 from typing import cast
+from urllib.parse import quote
 
 import pytest
 
+import openclaw_web.db.connection as connection_module
 import openclaw_web.db.migrations as migration_module
+from openclaw_web.db.connection import (
+    ConnectionConfigurationError,
+    managed_connection,
+)
 from openclaw_web.db.connection import connect as open_connection
-from openclaw_web.db.connection import managed_connection
 from openclaw_web.db.migrations import Migration, MigrationError, migrate
 from openclaw_web.db.repository import (
     Repository,
@@ -130,13 +136,15 @@ def _evidence(*, evidence_id: str = "evidence-1", observed_value: str = "fast") 
     )
 
 
-def _score(*, value: float = 80.0) -> ScoreRecord:
+def _score(
+    *, value: float = 80.0, evidence_ids: tuple[str, ...] = ("evidence-1",)
+) -> ScoreRecord:
     return ScoreRecord(
         score_name="website-quality",
         score_value=value,
         rubric_version="v1",
         inputs={"lcp_ms": 1500},
-        evidence_ids=["evidence-1"],
+        evidence_ids=list(evidence_ids),
         deterministic=True,
         explanation_vi="Trang tải nhanh.",
         confidence=Confidence.HIGH,
@@ -179,6 +187,46 @@ def _feedback(*, action: str = "approve") -> FeedbackEvent:
     )
 
 
+def _insert_candidate_parent(db: sqlite3.Connection, candidate_id: str = "candidate-1") -> None:
+    db.execute(
+        """
+        INSERT INTO candidates (
+            candidate_id, canonical_domain, normalized_name, normalized_address,
+            state, snapshot_json
+        ) VALUES (?, ?, ?, NULL, ?, ?)
+        """,
+        (candidate_id, f"{candidate_id}.example", candidate_id, "discovered", "{}"),
+    )
+
+
+def _insert_run_parent(db: sqlite3.Connection, run_id: str = "run-1") -> None:
+    db.execute(
+        """
+        INSERT INTO runs (
+            run_id, idempotency_key, config_version, status, started_at, snapshot_json
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            f"key-{run_id}",
+            "config-v1",
+            "pending",
+            "2026-08-12T00:00:00.000000Z",
+            "{}",
+        ),
+    )
+
+
+def _insert_project_parent(db: sqlite3.Connection, project_id: str = "project-1") -> None:
+    db.execute(
+        """
+        INSERT INTO projects (project_id, candidate_id, state, state_version, snapshot_json)
+        VALUES (?, NULL, ?, 0, ?)
+        """,
+        (project_id, "new", "{}"),
+    )
+
+
 def test_connect_configures_sqlite_and_migrate_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "nested" / "state.sqlite"
     db = connect(path)
@@ -198,10 +246,134 @@ def test_connect_configures_sqlite_and_migrate_is_idempotent(tmp_path: Path) -> 
         row["name"]
         for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
-    assert EXPECTED_TABLES <= tables
+    assert EXPECTED_TABLES == tables
     assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+    migration_row = db.execute(
+        "SELECT version, checksum, applied_at FROM schema_migrations"
+    ).fetchone()
+    assert migration_row["version"] == 1
+    assert migration_row["checksum"] == migration_module._MIGRATIONS[0].checksum
+    assert len(migration_row["checksum"]) == 64
+    datetime.fromisoformat(migration_row["applied_at"])
     assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_connect_expands_tilde_once_for_sqlite_and_parent_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", os.fspath(home))
+    monkeypatch.setenv("USERPROFILE", os.fspath(home))
+
+    db = open_connection("~/nested/state.sqlite")
+    try:
+        expected = Path(os.path.abspath(os.path.expanduser("~/nested/state.sqlite")))
+        assert expected.parent.is_dir()
+        assert db.execute("PRAGMA database_list").fetchone()["file"] == os.fspath(expected)
+    finally:
+        db.close()
+
+
+def test_connect_opens_readonly_uri_without_attempting_journal_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "readonly.sqlite"
+    raw = sqlite3.connect(path)
+    raw.execute("CREATE TABLE marker (id INTEGER)")
+    raw.commit()
+    raw.close()
+
+    uri = f"file:{path.as_posix()}?mode=ro"
+    db = open_connection(uri)
+    try:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert db.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        assert db.execute("SELECT COUNT(*) FROM marker").fetchone()[0] == 0
+    finally:
+        db.close()
+
+
+def test_connect_treats_immutable_uri_as_readonly(tmp_path: Path) -> None:
+    path = tmp_path / "immutable.sqlite"
+    raw = sqlite3.connect(path)
+    raw.execute("CREATE TABLE marker (id INTEGER)")
+    raw.commit()
+    raw.close()
+
+    db = open_connection(f"file:{path.as_posix()}?immutable=1")
+    try:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert db.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    finally:
+        db.close()
+
+
+def test_connect_parses_memory_mode_as_an_exact_query_parameter() -> None:
+    db = open_connection("file:task3-memory?mode=memory&cache=shared")
+    try:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "memory"
+    finally:
+        db.close()
+
+
+def test_connect_does_not_treat_query_values_containing_mode_memory_as_memory(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "nested" / "state.sqlite"
+    uri = f"file:{path.as_posix()}?note=mode=memory"
+
+    db = open_connection(uri)
+    try:
+        assert path.parent.is_dir()
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    finally:
+        db.close()
+
+
+def test_connect_decodes_writable_uri_path_for_parent_creation(tmp_path: Path) -> None:
+    path = tmp_path / "encoded parent" / "state.sqlite"
+    uri = f"file:{quote(path.as_posix())}?mode=rwc"
+
+    db = open_connection(uri)
+    try:
+        assert path.parent.is_dir()
+        assert path.is_file()
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    finally:
+        db.close()
+
+
+class _WalRefusingConnection(sqlite3.Connection):
+    def execute(
+        self, sql: str, parameters: tuple[object, ...] = ()
+    ) -> sqlite3.Cursor:
+        if sql == "PRAGMA journal_mode = WAL":
+            return super().execute("PRAGMA journal_mode = DELETE")
+        return super().execute(sql, parameters)
+
+
+def test_connect_rejects_writable_disk_when_wal_cannot_be_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[_WalRefusingConnection] = []
+    sqlite_connect = sqlite3.connect
+
+    def refusing_connect(*args: object, **kwargs: object) -> _WalRefusingConnection:
+        connection = cast(
+            _WalRefusingConnection,
+            sqlite_connect(*args, **kwargs, factory=_WalRefusingConnection),
+        )
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(connection_module.sqlite3, "connect", refusing_connect)
+
+    with pytest.raises(ConnectionConfigurationError, match="WAL"):
+        open_connection(tmp_path / "state.sqlite")
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")
 
 
 def test_connection_and_repository_contexts_close_the_connection(tmp_path: Path) -> None:
@@ -219,20 +391,159 @@ def test_connection_and_repository_contexts_close_the_connection(tmp_path: Path)
         owned.execute("SELECT 1")
 
 
-def test_required_unique_indexes_are_present(tmp_path: Path) -> None:
+def _index_shapes(
+    db: sqlite3.Connection, table: str
+) -> dict[str, tuple[bool, tuple[str, ...], bool]]:
+    shapes: dict[str, tuple[bool, tuple[str, ...], bool]] = {}
+    for index in db.execute(f"PRAGMA index_list({table})").fetchall():
+        name = str(index["name"])
+        if name.startswith("sqlite_autoindex_"):
+            continue
+        columns = tuple(
+            str(row["name"])
+            for row in db.execute(f'PRAGMA index_info("{name}")').fetchall()
+        )
+        shapes[name] = (bool(index["unique"]), columns, bool(index["partial"]))
+    return shapes
+
+
+def test_required_indexes_have_exact_uniqueness_and_column_order(tmp_path: Path) -> None:
     db = connect(tmp_path / "state.sqlite")
     migrate(db)
 
-    unique_index_sql = "\n".join(
-        row["sql"] or ""
-        for row in db.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
-        )
-    ).lower()
+    expected = {
+        "runs": {"ux_runs_idempotency_key": (True, ("idempotency_key",), False)},
+        "candidates": {
+            "ux_candidates_canonical_domain": (True, ("canonical_domain",), False),
+            "ux_candidates_name_address": (
+                True,
+                ("normalized_name", "normalized_address"),
+                True,
+            ),
+        },
+        "candidate_sources": {
+            "ix_candidate_sources_domain": (False, ("canonical_domain",), False),
+        },
+        "evidence": {"ix_evidence_candidate_id": (False, ("candidate_id",), False)},
+        "issues": {"ix_issues_candidate_id": (False, ("candidate_id",), False)},
+        "feedback": {"ix_feedback_project_id": (False, ("project_id",), False)},
+        "deliveries": {
+            "ux_deliveries_idempotency_key": (True, ("idempotency_key",), False),
+        },
+        "component_sets": {
+            "ux_component_sets_bot_message": (
+                True,
+                ("channel_id", "message_id"),
+                False,
+            ),
+        },
+        "worklog_events": {
+            "ix_worklog_events_project_id": (False, ("project_id",), False),
+        },
+    }
 
-    assert "canonical_domain" in unique_index_sql
-    assert "idempotency_key" in unique_index_sql
-    assert "channel_id" in unique_index_sql and "message_id" in unique_index_sql
+    for table, indexes in expected.items():
+        assert _index_shapes(db, table) == indexes
+
+
+@pytest.mark.parametrize(
+    "migrations",
+    [
+        cast(tuple[Migration, ...], [Migration(1, ("SELECT 1",))]),
+        (),
+        (Migration(0, ("SELECT 1",)),),
+        (Migration(-1, ("SELECT 1",)),),
+        (Migration(True, ("SELECT 1",)),),
+        (Migration(1, ()),),
+        (Migration(1, ("",)),),
+        (Migration(1, ("   ",)),),
+        (Migration(1, cast(tuple[str, ...], ("SELECT 1", 2))),),
+        (Migration(1, cast(tuple[str, ...], ["SELECT 1"])),),
+        (Migration(1, ("SELECT 1",)), Migration(1, ("SELECT 2",))),
+        (Migration(2, ("SELECT 2",)), Migration(1, ("SELECT 1",))),
+    ],
+)
+def test_migrate_rejects_invalid_definitions_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    migrations: tuple[Migration, ...],
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    monkeypatch.setattr(migration_module, "_MIGRATIONS", migrations)
+
+    with pytest.raises(MigrationError, match="migration definitions"):
+        migrate(db)
+
+    assert db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] == 0
+    assert not db.in_transaction
+
+
+def test_migrate_rejects_historical_sql_drift_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    before = db.total_changes
+    historical = migration_module._MIGRATIONS[0]
+    altered = Migration(historical.version, historical.statements + ("SELECT 1",))
+    monkeypatch.setattr(migration_module, "_MIGRATIONS", (altered,))
+
+    with pytest.raises(MigrationError, match="checksum"):
+        migrate(db)
+
+    assert db.total_changes == before
+    assert not db.in_transaction
+
+
+def test_migrate_rejects_tampered_stored_checksum(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    db.execute("UPDATE schema_migrations SET checksum = ? WHERE version = 1", ("0" * 64,))
+    before = db.total_changes
+
+    with pytest.raises(MigrationError, match="checksum"):
+        migrate(db)
+
+    assert db.total_changes == before
+    assert not db.in_transaction
+
+
+def test_migrate_rejects_unknown_applied_version(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    db.execute(
+        "INSERT INTO schema_migrations (version, checksum, applied_at) VALUES (?, ?, ?)",
+        (99, "0" * 64, "2026-08-12T00:00:00.000000Z"),
+    )
+    before = db.total_changes
+
+    with pytest.raises(MigrationError, match="exact prefix"):
+        migrate(db)
+
+    assert db.total_changes == before
+
+
+def test_migrate_rejects_applied_version_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrations = (
+        Migration(1, ("CREATE TABLE one (id INTEGER)",)),
+        Migration(2, ("CREATE TABLE two (id INTEGER)",)),
+        Migration(3, ("CREATE TABLE three (id INTEGER)",)),
+    )
+    monkeypatch.setattr(migration_module, "_MIGRATIONS", migrations)
+    db.execute(migration_module._SCHEMA_MIGRATIONS_SQL)
+    for migration in (migrations[0], migrations[2]):
+        db.execute(
+            "INSERT INTO schema_migrations (version, checksum, applied_at) VALUES (?, ?, ?)",
+            (migration.version, migration.checksum, "2026-08-12T00:00:00.000000Z"),
+        )
+    before = db.total_changes
+
+    with pytest.raises(MigrationError, match="exact prefix"):
+        migrate(db)
+
+    assert db.total_changes == before
+    assert db.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'two'").fetchone()[0] == 0
 
 
 def test_migration_failure_rolls_back_every_statement(
@@ -303,16 +614,18 @@ def test_deferred_foreign_key_commit_failure_rolls_back_repository_transaction(
         db.execute(
             """
             INSERT INTO candidate_sources (
-                candidate_id, source_url, canonical_domain, source_type, discovered_at,
-                snapshot_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                observation_id, candidate_id, source_url, canonical_domain, source_type,
+                discovered_at, conflict, snapshot_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                "a" * 64,
                 "missing",
                 "https://example.com:8443/source",
                 "example.com",
                 "directory",
                 "2026-08-12T00:00:00.000000Z",
+                0,
                 "{}",
             ),
         )
@@ -430,6 +743,95 @@ def test_domain_deduplication_preserves_full_source_urls(tmp_path: Path) -> None
     ] == sorted([first_url, second_url])
 
 
+def test_candidate_sources_preserve_each_full_incoming_observation(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    first_url = "https://example.com:8443/a?nguon=mot"
+    second_url = "https://example.com:9443/b?nguon=hai"
+
+    repo.upsert_candidate(first_url, "Công ty Ánh Dương", "12 Phố Huế")
+    repo.upsert_candidate(second_url, "CÔNG TY ÁNH DƯƠNG", "12, Phố Huế")
+
+    rows = db.execute(
+        """
+        SELECT source_url, conflict, snapshot_json
+        FROM candidate_sources ORDER BY source_url
+        """
+    ).fetchall()
+    assert len(rows) == 2
+    observations = {row["source_url"]: json.loads(row["snapshot_json"]) for row in rows}
+    for observation in observations.values():
+        discovered_at = observation.pop("discovered_at")
+        datetime.fromisoformat(discovered_at)
+    assert observations[first_url] == {
+        "address": "12 Phố Huế",
+        "business_name": "Công ty Ánh Dương",
+        "candidate_id": observations[first_url]["candidate_id"],
+        "canonical_domain": "example.com",
+        "normalized_address": "12 phố huế",
+        "normalized_name": "công ty ánh dương",
+        "source_type": "direct",
+        "source_url": first_url,
+    }
+    assert observations[second_url] == {
+        "address": "12, Phố Huế",
+        "business_name": "CÔNG TY ÁNH DƯƠNG",
+        "candidate_id": observations[first_url]["candidate_id"],
+        "canonical_domain": "example.com",
+        "normalized_address": "12 phố huế",
+        "normalized_name": "công ty ánh dương",
+        "source_type": "direct",
+        "source_url": second_url,
+    }
+    assert [row["conflict"] for row in rows] == [0, 0]
+
+
+def test_contradictory_domain_observation_is_persisted_then_raises_conflict(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    repo.upsert_candidate("https://example.com/a", "Doanh nghiệp Một", "Hà Nội")
+
+    with pytest.raises(RepositoryConflict, match="contradictory"):
+        repo.upsert_candidate("https://example.com/b", "Doanh nghiệp Hai", "Đà Nẵng")
+
+    assert not db.in_transaction
+    conflict = db.execute(
+        """
+        SELECT conflict, snapshot_json FROM candidate_sources
+        WHERE source_url = ?
+        """,
+        ("https://example.com/b",),
+    ).fetchone()
+    assert conflict["conflict"] == 1
+    assert json.loads(conflict["snapshot_json"])["business_name"] == "Doanh nghiệp Hai"
+    assert json.loads(conflict["snapshot_json"])["address"] == "Đà Nẵng"
+
+    with pytest.raises(RepositoryConflict, match="contradictory"):
+        repo.upsert_candidate("https://example.com/b", "Doanh nghiệp Hai", "Đà Nẵng")
+    assert db.execute("SELECT COUNT(*) FROM candidate_sources").fetchone()[0] == 2
+    assert db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 1
+
+
+def test_name_only_candidates_do_not_fallback_dedupe_and_blank_address_is_rejected(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+
+    first = repo.upsert_candidate("https://first.example", "Tên giống nhau", None)
+    second = repo.upsert_candidate("https://second.example", "Tên giống nhau", None)
+
+    assert first.candidate_id != second.candidate_id
+    with pytest.raises(ValueError, match="address"):
+        repo.upsert_candidate("https://third.example", "Tên giống nhau", "   ")
+    assert repo.count_candidates() == 2
+
+
 def test_distinct_domains_remain_distinct(tmp_path: Path) -> None:
     db = connect(tmp_path / "state.sqlite")
     migrate(db)
@@ -497,6 +899,34 @@ def test_find_duplicate_falls_back_to_normalized_name_and_address(tmp_path: Path
     alias = repo.find_duplicate(_seed("https://unrelated-example.net", "Renamed", None))
     assert alias is not None
     assert alias.candidate_id == existing.candidate_id
+
+
+def test_fallback_domain_alias_keeps_stable_candidate_identity_on_later_conflict(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    existing = repo.upsert_candidate(
+        "https://first-example.com", "Công ty Ánh Dương", "12 Phố Huế"
+    )
+    alias = repo.upsert_candidate(
+        "https://alias-example.net", "CÔNG TY ÁNH DƯƠNG", "12, Phố Huế"
+    )
+    assert alias.candidate_id == existing.candidate_id
+
+    with pytest.raises(RepositoryConflict, match="contradictory"):
+        repo.upsert_candidate("https://alias-example.net/about", "Doanh nghiệp Khác", "Huế")
+
+    assert repo.count_candidates() == 1
+    conflict = db.execute(
+        """
+        SELECT candidate_id, conflict FROM candidate_sources
+        WHERE source_url = ?
+        """,
+        ("https://alias-example.net/about",),
+    ).fetchone()
+    assert tuple(conflict) == (existing.candidate_id, 1)
 
 
 def test_concurrent_candidate_upsert_is_atomic(tmp_path: Path) -> None:
@@ -568,6 +998,10 @@ def test_append_records_are_idempotent_and_conflicting_identity_is_rejected(
     db = connect(tmp_path / "state.sqlite")
     migrate(db)
     repo = Repository(db)
+    if table in {"evidence", "issues"}:
+        _insert_candidate_parent(db)
+    if table == "feedback":
+        _insert_project_parent(db)
     append = {
         "evidence": repo.append_evidence,
         "issues": repo.append_issue,
@@ -606,12 +1040,31 @@ def test_score_append_uses_deterministic_identity_and_rejects_changed_result(
     assert db.execute("SELECT COUNT(*) FROM scores").fetchone()[0] == 1
 
 
+def test_score_evidence_ids_are_a_sorted_unique_reference_set(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+
+    repo.append_score(_score(evidence_ids=("evidence-b", "evidence-a")))
+    repo.append_score(_score(evidence_ids=("evidence-a", "evidence-b")))
+    repo.append_score(
+        _score(evidence_ids=("evidence-b", "evidence-a", "evidence-b"))
+    )
+
+    rows = db.execute("SELECT record_id, snapshot_json FROM scores").fetchall()
+    assert len(rows) == 1
+    assert len(rows[0]["record_id"]) == 64
+    persisted = ScoreRecord.model_validate_json(rows[0]["snapshot_json"])
+    assert persisted.evidence_ids == ("evidence-a", "evidence-b")
+
+
 def test_delivery_enqueue_is_idempotent_by_unique_key_and_returns_persisted_record(
     tmp_path: Path,
 ) -> None:
     db = connect(tmp_path / "state.sqlite")
     migrate(db)
     repo = Repository(db)
+    _insert_project_parent(db)
     delivery = _delivery()
 
     first = repo.enqueue_delivery(delivery)
@@ -626,24 +1079,209 @@ def test_delivery_enqueue_is_idempotent_by_unique_key_and_returns_persisted_reco
     assert db.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] == 1
 
 
-def test_declared_foreign_keys_are_enforced(tmp_path: Path) -> None:
+def _foreign_key_shapes(
+    db: sqlite3.Connection, table: str
+) -> set[tuple[str, str, str, str, str]]:
+    return {
+        (
+            str(row["from"]),
+            str(row["table"]),
+            str(row["to"]),
+            str(row["on_update"]),
+            str(row["on_delete"]),
+        )
+        for row in db.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+    }
+
+
+def test_foreign_key_relationship_classes_are_declared_exactly(tmp_path: Path) -> None:
     db = connect(tmp_path / "state.sqlite")
     migrate(db)
 
-    with pytest.raises(sqlite3.IntegrityError):
-        db.execute(
-            """
-            INSERT INTO candidate_sources (
-                candidate_id, source_url, canonical_domain, source_type, discovered_at,
-                snapshot_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
+    candidate_relationship = {
+        ("candidate_id", "candidates", "candidate_id", "NO ACTION", "RESTRICT")
+    }
+    for table in ("candidate_sources", "pages", "evidence", "issues", "projects"):
+        assert _foreign_key_shapes(db, table) == candidate_relationship
+    assert _foreign_key_shapes(db, "audits") == candidate_relationship | {
+        ("source_run_id", "runs", "run_id", "NO ACTION", "RESTRICT")
+    }
+
+    project_relationship = {
+        ("project_id", "projects", "project_id", "NO ACTION", "RESTRICT")
+    }
+    for table in ("feedback", "deliveries", "component_sets", "worklog_events"):
+        assert _foreign_key_shapes(db, table) == project_relationship
+
+
+@pytest.mark.parametrize(
+    ("sql", "values", "seed_candidate", "seed_run"),
+    [
+        (
+            """INSERT INTO candidate_sources (
+                observation_id, candidate_id, source_url, canonical_domain, source_type,
+                discovered_at, conflict, snapshot_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
+                "a" * 64,
                 "missing",
                 "https://example.com/",
                 "example.com",
-                "directory",
-                "2026-08-12T00:00:00.000000+00:00",
+                "direct",
+                "2026-08-12T00:00:00.000000Z",
+                0,
                 "{}",
             ),
+            False,
+            False,
+        ),
+        (
+            "INSERT INTO pages VALUES (?, ?, ?, ?, ?)",
+            ("page-1", "missing", "https://example.com/", "home", "{}"),
+            False,
+            False,
+        ),
+        (
+            "INSERT INTO evidence VALUES (?, ?, ?, ?, ?)",
+            (
+                "evidence-1",
+                "missing",
+                "performance",
+                "2026-08-12T00:00:00.000000Z",
+                "{}",
+            ),
+            False,
+            False,
+        ),
+        (
+            "INSERT INTO audits VALUES (?, ?, ?, ?, ?)",
+            ("audit-1", "missing", "run-1", "pending", "{}"),
+            False,
+            True,
+        ),
+        (
+            "INSERT INTO audits VALUES (?, ?, ?, ?, ?)",
+            ("audit-1", "candidate-1", "missing", "pending", "{}"),
+            True,
+            False,
+        ),
+        (
+            "INSERT INTO issues VALUES (?, ?, ?, ?)",
+            ("issue-1", "missing", "P1", "{}"),
+            False,
+            False,
+        ),
+        (
+            "INSERT INTO projects VALUES (?, ?, ?, ?, ?)",
+            ("project-1", "missing", "new", 0, "{}"),
+            False,
+            False,
+        ),
+        (
+            "INSERT INTO feedback VALUES (?, ?, ?, ?, ?)",
+            (
+                "feedback-1",
+                "missing",
+                "actor-1",
+                "2026-08-12T00:00:00.000000Z",
+                "{}",
+            ),
+            False,
+            False,
+        ),
+        (
+            "INSERT INTO deliveries VALUES (?, ?, ?, ?, ?, ?)",
+            ("delivery-1", "delivery-key", "missing", "channel-1", "pending", "{}"),
+            False,
+            False,
+        ),
+        (
+            "INSERT INTO component_sets VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "components-1",
+                "channel-1",
+                "message-1",
+                "missing",
+                "2026-08-12T00:00:00.000000Z",
+                "{}",
+            ),
+            False,
+            False,
+        ),
+        (
+            "INSERT INTO worklog_events VALUES (?, ?, ?, ?, ?)",
+            (
+                "event-1",
+                "missing",
+                "created",
+                "2026-08-12T00:00:00.000000Z",
+                "{}",
+            ),
+            False,
+            False,
+        ),
+    ],
+)
+def test_foreign_key_relationships_reject_missing_parents(
+    tmp_path: Path,
+    sql: str,
+    values: tuple[object, ...],
+    seed_candidate: bool,
+    seed_run: bool,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    if seed_candidate:
+        _insert_candidate_parent(db)
+    if seed_run:
+        _insert_run_parent(db)
+
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        db.execute(sql, values)
+
+
+def test_every_snapshot_column_requires_a_valid_json_object(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    snapshot_tables = {
+        "runs",
+        "candidates",
+        "candidate_sources",
+        "pages",
+        "evidence",
+        "audits",
+        "scores",
+        "issues",
+        "projects",
+        "feedback",
+        "deliveries",
+        "component_sets",
+        "worklog_events",
+    }
+    expected_check = "check(json_valid(snapshot_json)andjson_type(snapshot_json)='object')"
+
+    for table in snapshot_tables:
+        sql = str(
+            db.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()["sql"]
         )
+        normalized = "".join(sql.lower().split())
+        assert expected_check in normalized
+
+    for invalid_snapshot in ("not-json", "[]"):
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            db.execute(
+                """
+                INSERT INTO candidates (
+                    candidate_id, canonical_domain, normalized_name, state, snapshot_json
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    f"candidate-{invalid_snapshot}",
+                    f"{invalid_snapshot}.example",
+                    invalid_snapshot,
+                    "new",
+                    invalid_snapshot,
+                ),
+            )

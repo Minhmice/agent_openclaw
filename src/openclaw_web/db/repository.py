@@ -172,26 +172,50 @@ class Repository:
 
     def _append_candidate_source(
         self,
-        candidate: Candidate,
+        candidate_id: str,
         source_url: AnyHttpUrl,
         canonical_domain: str,
+        business_name: str,
+        address: str | None,
+        normalized_name: str,
+        normalized_address: str | None,
         discovered_at: datetime,
+        *,
+        conflict: bool,
     ) -> None:
+        identity = {
+            "address": address,
+            "business_name": business_name,
+            "candidate_id": candidate_id,
+            "canonical_domain": canonical_domain,
+            "normalized_address": normalized_address,
+            "normalized_name": normalized_name,
+            "source_type": "direct",
+            "source_url": str(source_url),
+        }
+        observation_id = hashlib.sha256(
+            _canonical_mapping_json(identity).encode("utf-8")
+        ).hexdigest()
+        snapshot = _canonical_mapping_json(
+            {**identity, "discovered_at": _utc_text(discovered_at)}
+        )
         self.connection.execute(
             """
             INSERT INTO candidate_sources (
-                candidate_id, source_url, canonical_domain, source_type, discovered_at,
-                snapshot_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(candidate_id, source_url) DO NOTHING
+                observation_id, candidate_id, source_url, canonical_domain, source_type,
+                discovered_at, conflict, snapshot_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(observation_id) DO NOTHING
             """,
             (
-                candidate.candidate_id,
+                observation_id,
+                candidate_id,
                 str(source_url),
                 canonical_domain,
                 "direct",
                 _utc_text(discovered_at),
-                _canonical_json(candidate),
+                int(conflict),
+                snapshot,
             ),
         )
 
@@ -220,45 +244,86 @@ class Repository:
             source_urls=[validated_url],
         )
         snapshot = _canonical_json(candidate)
+        persisted = candidate
+        contradictory_observation = False
 
         with _immediate_transaction(self.connection):
             row = self.connection.execute(
-                "SELECT snapshot_json FROM candidates WHERE canonical_domain = ?",
+                """
+                SELECT snapshot_json, normalized_name, normalized_address
+                FROM candidates WHERE canonical_domain = ?
+                """,
                 (canonical_domain,),
             ).fetchone()
+            matched_domain = row is not None
+            if row is None:
+                row = self.connection.execute(
+                    """
+                    SELECT c.snapshot_json, c.normalized_name, c.normalized_address
+                    FROM candidate_sources AS s
+                    JOIN candidates AS c ON c.candidate_id = s.candidate_id
+                    WHERE s.canonical_domain = ?
+                    LIMIT 1
+                    """,
+                    (canonical_domain,),
+                ).fetchone()
+                matched_domain = row is not None
             if row is None and normalized_address is not None:
                 row = self.connection.execute(
                     """
-                    SELECT snapshot_json FROM candidates
+                    SELECT snapshot_json, normalized_name, normalized_address
+                    FROM candidates
                     WHERE normalized_name = ? AND normalized_address = ?
                     """,
                     (normalized_name, normalized_address),
                 ).fetchone()
             if row is not None:
                 persisted = self._candidate_from_row(row)
-                self._append_candidate_source(persisted, validated_url, canonical_domain, now)
-                return persisted
-
-            self.connection.execute(
-                """
-                INSERT INTO candidates (
-                    candidate_id, canonical_domain, normalized_name, normalized_address,
-                    state, discovered_at, updated_at, snapshot_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    candidate.candidate_id,
-                    canonical_domain,
-                    normalized_name,
-                    normalized_address,
-                    candidate.state.value,
-                    _utc_text(now),
-                    _utc_text(now),
-                    snapshot,
-                ),
+                persisted_address = row["normalized_address"]
+                contradictory_observation = matched_domain and (
+                    str(row["normalized_name"]) != normalized_name
+                    or (
+                        persisted_address is not None
+                        and normalized_address is not None
+                        and str(persisted_address) != normalized_address
+                    )
+                )
+            else:
+                self.connection.execute(
+                    """
+                    INSERT INTO candidates (
+                        candidate_id, canonical_domain, normalized_name, normalized_address,
+                        state, discovered_at, updated_at, snapshot_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        candidate.candidate_id,
+                        canonical_domain,
+                        normalized_name,
+                        normalized_address,
+                        candidate.state.value,
+                        _utc_text(now),
+                        _utc_text(now),
+                        snapshot,
+                    ),
+                )
+            self._append_candidate_source(
+                persisted.candidate_id,
+                validated_url,
+                canonical_domain,
+                business_name,
+                address,
+                normalized_name,
+                normalized_address,
+                now,
+                conflict=contradictory_observation,
             )
-            self._append_candidate_source(candidate, validated_url, canonical_domain, now)
-        return candidate
+
+        if contradictory_observation:
+            raise RepositoryConflict(
+                "candidate domain received a materially contradictory name or address observation"
+            )
+        return persisted
 
     def find_duplicate(self, candidate: CandidateSeed) -> Candidate | None:
         _, canonical_domain = _canonical_domain(candidate.url)
@@ -352,8 +417,14 @@ class Repository:
                     owner = excluded.owner,
                     acquired_at = excluded.acquired_at,
                     lease_expires_at = excluded.lease_expires_at
-                WHERE run_locks.owner = excluded.owner
-                   OR run_locks.lease_expires_at < excluded.acquired_at
+                WHERE (
+                        run_locks.owner = excluded.owner
+                    AND run_locks.acquired_at <= excluded.acquired_at
+                    AND run_locks.lease_expires_at <= excluded.lease_expires_at
+                ) OR (
+                        run_locks.owner <> excluded.owner
+                    AND run_locks.lease_expires_at < excluded.acquired_at
+                )
                 """,
                 (lock_key, owner_token, now_text, expiry_text),
             )
@@ -374,9 +445,21 @@ class Repository:
                 """
                 UPDATE run_locks
                 SET acquired_at = ?, lease_expires_at = ?
-                WHERE lock_key = ? AND owner = ? AND lease_expires_at >= ?
+                WHERE lock_key = ?
+                  AND owner = ?
+                  AND lease_expires_at >= ?
+                  AND acquired_at <= ?
+                  AND lease_expires_at <= ?
                 """,
-                (now_text, expiry_text, lock_key, owner_token, now_text),
+                (
+                    now_text,
+                    expiry_text,
+                    lock_key,
+                    owner_token,
+                    now_text,
+                    now_text,
+                    expiry_text,
+                ),
             )
             return cursor.rowcount == 1
 
@@ -436,13 +519,19 @@ class Repository:
         )
 
     def append_score(self, score: ScoreRecord) -> None:
-        snapshot = _canonical_json(score)
+        normalized_score = ScoreRecord.model_validate(
+            {
+                **score.model_dump(mode="python"),
+                "evidence_ids": sorted(set(score.evidence_ids)),
+            }
+        )
+        snapshot = _canonical_json(normalized_score)
         identity_json = _canonical_mapping_json(
             {
-                "evidence_ids": list(score.evidence_ids),
-                "inputs": score.model_dump(mode="json")["inputs"],
-                "rubric_version": score.rubric_version,
-                "score_name": score.score_name,
+                "evidence_ids": list(normalized_score.evidence_ids),
+                "inputs": normalized_score.model_dump(mode="json")["inputs"],
+                "rubric_version": normalized_score.rubric_version,
+                "score_name": normalized_score.score_name,
             }
         )
         record_id = hashlib.sha256(identity_json.encode("utf-8")).hexdigest()
@@ -450,13 +539,18 @@ class Repository:
             table="scores",
             identity_column="record_id",
             record_id=record_id,
-            model=score,
+            model=normalized_score,
             model_type=ScoreRecord,
             insert_sql="""
                 INSERT INTO scores (record_id, score_name, rubric_version, snapshot_json)
                 VALUES (?, ?, ?, ?)
             """,
-            values=(record_id, score.score_name, score.rubric_version, snapshot),
+            values=(
+                record_id,
+                normalized_score.score_name,
+                normalized_score.rubric_version,
+                snapshot,
+            ),
         )
 
     def append_issue(self, issue: IssueRecord) -> None:
