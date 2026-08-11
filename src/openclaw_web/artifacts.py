@@ -7,6 +7,7 @@ import importlib
 import json
 import ntpath
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -36,6 +37,18 @@ from openclaw_web.models import (
 )
 
 _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
+_SCHEMA_DOCUMENT_FILENAME = re.compile(r"[a-z][a-z0-9_]*\.json")
+_WINDOWS_RESERVED_SCHEMA_STEMS = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "CLOCK$",
+        *(f"COM{number}" for number in range(1, 10)),
+        *(f"LPT{number}" for number in range(1, 10)),
+    }
+)
 _SCHEMA_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
     ("artifact_envelope.json", ArtifactEnvelope),
     ("audit_record.json", AuditRecord),
@@ -472,27 +485,12 @@ def _validate_schema_documents(documents: object) -> dict[str, bytes]:
     if not isinstance(documents, Mapping):
         raise TypeError("schema documents must be a mapping")
 
-    validated: dict[str, bytes] = {}
+    # Retain a defense-in-depth collision check even though the lowercase
+    # filename allowlist below makes collisions impossible for valid names.
     case_insensitive_names: set[str] = set()
-    for filename, schema_bytes in documents.items():
+    for filename in documents:
         if not isinstance(filename, str):
             raise TypeError("schema document filename must be a string")
-        drive, _ = ntpath.splitdrive(filename)
-        if (
-            not filename
-            or filename in {".", ".."}
-            or filename == ".json"
-            or "/" in filename
-            or "\\" in filename
-            or bool(drive)
-            or "\0" in filename
-            or not filename.endswith(".json")
-        ):
-            raise ValueError(
-                "schema document filename must be a nonempty simple lowercase "
-                f".json basename: {filename!r}"
-            )
-
         case_insensitive_name = ntpath.normcase(filename)
         if case_insensitive_name in case_insensitive_names:
             raise ValueError(
@@ -500,6 +498,18 @@ def _validate_schema_documents(documents: object) -> dict[str, bytes]:
                 f"{filename!r}"
             )
         case_insensitive_names.add(case_insensitive_name)
+
+    validated: dict[str, bytes] = {}
+    for filename, schema_bytes in documents.items():
+        schema_stem = filename.removesuffix(".json")
+        if (
+            _SCHEMA_DOCUMENT_FILENAME.fullmatch(filename) is None
+            or schema_stem.upper() in _WINDOWS_RESERVED_SCHEMA_STEMS
+        ):
+            raise ValueError(
+                "schema document filename must be a nonempty simple lowercase "
+                f".json basename: {filename!r}"
+            )
 
         if not isinstance(schema_bytes, bytes):
             raise TypeError("schema document value must be bytes")
