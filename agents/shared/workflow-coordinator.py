@@ -187,7 +187,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_approve(args: argparse.Namespace) -> None:
-    require_actor(args.actor, {MINH_ID})
+    require_actor(args.actor, {MINH_ID, WIEN_ID})
     project = load(args.project_id)
     if project.get("status") != "review":
         raise ValueError("project must be in review state")

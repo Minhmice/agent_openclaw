@@ -18,7 +18,8 @@ Discord native buttons are not available in the current OpenClaw Discord capabil
 
 ## Authorization
 
-- `/approve`, `/reject`, and `/request-change`: Minh only (`620891893659598850`).
+- `/approve`: Minh or Wien (`620891893659598850`, `859783610625556480`).
+- `/reject` and `/request-change`: Minh only (`620891893659598850`).
 - `/page-status`, `/page-done`, and `/block`: Minh or Wien (`859783610625556480`) when acting on an assigned task.
 - `/page-approve` and `/final-confirm`: Minh or Wien when acting on an assigned page/project. The final transition to `offer-ready` requires both final confirmations unless Minh explicitly overrides it.
 

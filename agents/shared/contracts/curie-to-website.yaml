@@ -1,6 +1,6 @@
 version: 1
 name: curie-to-website
-description: Minh-approved Curie lead handoff to the Website Brief Agent.
+description: Minh- or Wien-approved Curie lead handoff to the Website Brief Agent.
 required:
   approval:
     approved: true

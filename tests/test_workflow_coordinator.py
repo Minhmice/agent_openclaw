@@ -56,8 +56,9 @@ class WorkflowCoordinatorTests(unittest.TestCase):
 
     def test_happy_path_requires_both_final_confirmations(self):
         self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)
-        self.assertNotEqual(self.run_cmd("approve", "acme-demo", "--actor", WIEN).returncode, 0)
-        self.assertEqual(self.run_cmd("approve", "acme-demo", "--actor", MINH).returncode, 0)
+        self.assertNotEqual(self.run_cmd("approve", "acme-demo", "--actor", "999999999999999999").returncode, 0)
+        self.assertEqual(self.run_cmd("approve", "acme-demo", "--actor", WIEN).returncode, 0)
+        self.assertEqual(self.load_project()["approved_by"], WIEN)
         self.assertNotEqual(self.run_cmd("page-done", "acme-demo", "homepage", "--actor", WIEN).returncode, 0)
         self.assertEqual(self.run_cmd("page-done", "acme-demo", "homepage", "--actor", MINH).returncode, 0)
         self.assertEqual(self.run_cmd("page-approve", "acme-demo", "homepage", "--actor", MINH).returncode, 0)

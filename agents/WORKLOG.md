@@ -2,6 +2,29 @@
 
 This file records every implementation/review session for the OpenClaw multi-agent workflow. Never put passwords, tokens, private keys, cookies, provider secrets, or session content here.
 
+## 2026-08-11 — Allow Wien to approve Curie review leads
+
+### Request
+
+- Minh requested that Wien (`859783610625556480`) also be allowed to approve a Curie lead from `review`.
+
+### Local changes
+
+- Updated the deterministic coordinator so `/approve <project_id>` accepts Minh (`620891893659598850`) or Wien and records the actual actor in `approved_by`.
+- Kept `/reject` and `/request-change` Minh-only.
+- Updated the command contract, coordinator rules, PM role documentation, quality gate, and Curie-to-Website handoff description.
+- Extended the workflow test to cover Wien approval, actual `approved_by` recording, and rejection of an unknown actor.
+
+### Verification
+
+- `10/10` workflow tests passed.
+- Python compilation passed.
+- `git diff --check` passed.
+
+### Remote status
+
+- Remote sync is pending because this agent session has no configured SSH key or secret-provider credential. The host was reachable, but `BatchMode` SSH returned `Permission denied (publickey,password)`.
+
 ## 2026-08-11 — Workflow implementation approved
 
 ### User request

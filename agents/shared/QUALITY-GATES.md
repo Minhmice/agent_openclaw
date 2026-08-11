@@ -20,7 +20,7 @@ No defensible candidate means `no_candidate_defensible`, not a fabricated lead.
 
 ## Gate 2 — Website Brief
 
-Website Brief may start only from a Minh-approved Curie handoff. Before PM handoff it must:
+Website Brief may start only from a Minh- or Wien-approved Curie handoff. Before PM handoff it must:
 
 - independently verify public claims;
 - preserve observed/inferred/estimated status;

@@ -50,7 +50,7 @@ Follow [curie-handoff.md](contracts/curie-handoff.md) and [curie-report.md](cont
 ## Routing rules
 
 1. Curie may create a lead dossier and post a review item. It must not trigger the Website Brief Agent until Minh approves.
-2. A review approval is valid only when the actor ID is Minh's ID.
+2. A review approval is valid when the actor ID is Minh's or Wien's ID. Record the actual approving actor in `approved_by`.
 3. On approval, create or update the project state under `/home/minhmice/.openclaw/workflow/projects/<project_id>/project.json`, then invoke the Website Brief Agent with the approved `curie-to-website` JSON handoff.
 4. When the Website Brief package is complete, invoke Project PM with the `website-to-pm` JSON handoff and post the page matrix to the task channel.
 5. Project PM owns reminders and status summaries. It may not mark a page approved without its checklist and stakeholder review.

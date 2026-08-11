@@ -37,7 +37,7 @@ The agent must make progress visible and reduce coordination overhead. It does n
 
 Default authority:
 
-- Only Minh can approve a review item and trigger the move to task state.
+- Minh or Wien can approve a review item and trigger the move to task state.
 - Wien can update task/page progress and mark assigned work complete.
 - Final project handoff requires both Minh and Wien to confirm completion, unless Minh explicitly overrides this rule.
 
