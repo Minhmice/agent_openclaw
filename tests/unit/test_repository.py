@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import pytest
 
+import openclaw_web.db as db_package
 import openclaw_web.db.connection as connection_module
 import openclaw_web.db.migrations as migration_module
 from openclaw_web.db.connection import (
@@ -225,6 +226,23 @@ def _insert_project_parent(db: sqlite3.Connection, project_id: str = "project-1"
         """,
         (project_id, "new", "{}"),
     )
+
+
+def test_db_package_exports_typed_persistence_errors() -> None:
+    assert db_package.__all__ == [
+        "ConnectionConfigurationError",
+        "MigrationError",
+        "Repository",
+        "RepositoryConflict",
+        "RepositoryConflictError",
+        "RepositoryError",
+        "RunConfigMismatchError",
+        "connect",
+        "managed_connection",
+        "migrate",
+    ]
+    assert db_package.ConnectionConfigurationError is ConnectionConfigurationError
+    assert db_package.MigrationError is MigrationError
 
 
 def test_connect_configures_sqlite_and_migrate_is_idempotent(tmp_path: Path) -> None:
