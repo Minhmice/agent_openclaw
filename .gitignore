@@ -17,3 +17,4 @@ id_ed25519*
 .DS_Store
 Thumbs.db
 *.log
+__pycache__/

@@ -45,7 +45,10 @@ Discord routing:
 
 - Read current remote CLI capabilities and config shape.
 - Created the implementation plan and contracts locally.
-- Remote writes: pending after backup checkpoint.
+- Created remote backup checkpoint:
+  `/home/minhmice/.openclaw/backups/workflow-20260811T094000Z`
+- Created remote workflow directories and `/home/minhmice/.openclaw/workflow/WORKLOG.md`.
+- No agents, config, cron, or Discord message has been changed yet.
 
 ### Rollback
 
@@ -61,3 +64,31 @@ Create the remote backup, then add isolated agents and upload their instructions
 Detailed plan: [2026-08-11-openclaw-multi-agent-workflow.md](../docs/superpowers/plans/2026-08-11-openclaw-multi-agent-workflow.md).
 
 The plan is being executed inline after Minh explicitly approved the complete workflow.
+
+## 2026-08-11 — Coordinator completion, reminder validation, and remote smoke test
+
+### Work performed
+
+- Extended `agents/shared/workflow-coordinator.py` with the remaining typed-command handlers: `reject`, `request-change`, `page-status`, `page-approve`, and `block`.
+- Added page assignment checks, checklist-complete gating, unresolved P0/P1 gating, and the missing `stakeholder-review → approved` transition.
+- Updated the command contract and coordinator instructions so Minh and Wien can each issue `final-confirm`; `offer-ready` still requires both confirmations.
+- Added `tests/test_workflow_coordinator.py` covering authorization, page checklist gating, pending-page reminders, and the complete synthetic happy path. Local result: `3/3` tests passed; Python compile and `git diff --check` passed.
+- Created reminder cron `project-pm-active-reminders` with ID `9b083499-7412-47fb-bdaa-39083da68e84`, every 30 minutes, isolated `project-pm` session, explicit delivery to task channel `1533643473486348458`. It is enabled.
+- The first manual cron run timed out and was recorded as an execution error caused by an inline heredoc attempt inside the PM agent. The prompt was tightened to use the existing coordinator executable directly and forbid heredocs/inline-generated scripts.
+- The controlled retry completed with `status: ok`, `summary: HEARTBEAT_OK`, and `delivered: false` because there were no active projects requiring a reminder.
+- Uploaded the completed coordinator, command contract, and coordinator instructions to the remote main workspace.
+- Ran a synthetic remote state-machine test and cleaned up its temporary project. Verified unauthorized Minh-only approval rejection, unauthorized page update rejection, page approval, first final confirmation holding at `stakeholder-review`, and second confirmation reaching `offer-ready` with channel `1536659097649422356`.
+
+### Verified remote state
+
+- Gateway service: active.
+- OpenClaw health: OK; Discord connected; event-loop health recovered to non-degraded.
+- Agents: `main`, `curie`, `website-brief`, `project-pm` present with isolated workspaces.
+- Backup checkpoint remains `/home/minhmice/.openclaw/backups/workflow-20260811T094000Z`.
+- No real lead, project, website brief, Discord review message, or offer-ready message was created by the synthetic test.
+
+### Limitations and next action
+
+- Current Discord capability still has no native button/component support; typed commands remain canonical, with reactions only as a verified optional fallback.
+- The workflow is ready to receive a real Curie dossier. The next real action is to place a lead handoff in the review channel and wait for Minh's `/approve <project_id>` before Website Brief and PM processing.
+- Every future implementation or remote-change session must append a new dated section here and to the remote worklog.

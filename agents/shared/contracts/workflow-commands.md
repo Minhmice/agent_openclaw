@@ -11,15 +11,16 @@ Discord native buttons are not available in the current OpenClaw Discord capabil
 /status <project_id>
 /page-status <project_id> <page_slug>
 /page-done <project_id> <page_slug>
+/page-approve <project_id> <page_slug>
 /block <project_id> <page_slug> <reason>
 /final-confirm <project_id>
 ```
 
 ## Authorization
 
-- `/approve`, `/reject`, `/request-change`, and `/final-confirm`: Minh only (`620891893659598850`).
+- `/approve`, `/reject`, and `/request-change`: Minh only (`620891893659598850`).
 - `/page-status`, `/page-done`, and `/block`: Minh or Wien (`859783610625556480`) when acting on an assigned task.
-- The final transition to `offer-ready` requires both final confirmations unless Minh explicitly overrides it.
+- `/page-approve` and `/final-confirm`: Minh or Wien when acting on an assigned page/project. The final transition to `offer-ready` requires both final confirmations unless Minh explicitly overrides it.
 
 ## Project state
 

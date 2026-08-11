@@ -1,0 +1,86 @@
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).parents[1] / "agents" / "shared" / "workflow-coordinator.py"
+MINH = "620891893659598850"
+WIEN = "859783610625556480"
+
+
+class WorkflowCoordinatorTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name) / "workflow"
+        self.input_path = Path(self.tempdir.name) / "project.json"
+        self.project = {
+            "project_id": "acme-demo",
+            "status": "review",
+            "business_name": "Acme Demo",
+            "pages": [
+                {
+                    "slug": "homepage",
+                    "status": "planned",
+                    "owner_id": MINH,
+                    "target_day": 1,
+                    "checklist": [{"id": "copy", "status": "done"}],
+                }
+            ],
+        }
+        self.input_path.write_text(json.dumps(self.project), encoding="utf-8")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def run_cmd(self, *args):
+        env = os.environ.copy()
+        env["OPENCLAW_WORKFLOW_ROOT"] = str(self.root)
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), *args],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+    def load_project(self):
+        return json.loads((self.root / "projects" / "acme-demo" / "project.json").read_text(encoding="utf-8"))
+
+    def test_happy_path_requires_both_final_confirmations(self):
+        self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)
+        self.assertNotEqual(self.run_cmd("approve", "acme-demo", "--actor", WIEN).returncode, 0)
+        self.assertEqual(self.run_cmd("approve", "acme-demo", "--actor", MINH).returncode, 0)
+        self.assertNotEqual(self.run_cmd("page-done", "acme-demo", "homepage", "--actor", WIEN).returncode, 0)
+        self.assertEqual(self.run_cmd("page-done", "acme-demo", "homepage", "--actor", MINH).returncode, 0)
+        self.assertEqual(self.run_cmd("page-approve", "acme-demo", "homepage", "--actor", MINH).returncode, 0)
+        self.assertEqual(self.run_cmd("final-confirm", "acme-demo", "--actor", MINH).returncode, 0)
+        self.assertEqual(self.load_project()["status"], "stakeholder-review")
+        self.assertEqual(self.run_cmd("final-confirm", "acme-demo", "--actor", WIEN).returncode, 0)
+        project = self.load_project()
+        self.assertEqual(project["status"], "offer-ready")
+        self.assertEqual(project["offer_channel"], "1536659097649422356")
+
+    def test_page_approval_rejects_incomplete_checklist(self):
+        self.project["pages"][0]["checklist"][0]["status"] = "pending"
+        self.input_path.write_text(json.dumps(self.project), encoding="utf-8")
+        self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)
+        self.assertEqual(self.run_cmd("approve", "acme-demo", "--actor", MINH).returncode, 0)
+        self.assertEqual(self.run_cmd("page-done", "acme-demo", "homepage", "--actor", MINH).returncode, 0)
+        result = self.run_cmd("page-approve", "acme-demo", "homepage", "--actor", MINH)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("checklist is not complete", result.stderr)
+
+    def test_due_reminders_lists_pending_pages(self):
+        self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)
+        result = self.run_cmd("due-reminders", "--stale-minutes", "30")
+        self.assertEqual(result.returncode, 0)
+        due = json.loads(result.stdout)
+        self.assertEqual(due[0]["project_id"], "acme-demo")
+        self.assertEqual(due[0]["pending_pages"][0]["slug"], "homepage")
+
+
+if __name__ == "__main__":
+    unittest.main()
