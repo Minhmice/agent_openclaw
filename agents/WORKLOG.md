@@ -2,6 +2,27 @@
 
 This file records every implementation/review session for the OpenClaw multi-agent workflow. Never put passwords, tokens, private keys, cookies, provider secrets, or session content here.
 
+## 2026-08-11 — Diagnose Discord exec approval denial for Wien
+
+### Evidence
+
+- Discord showed `You are not authorized to approve exec requests on Discord.` when Wien pressed the native `approve` control.
+- This is OpenClaw's host-exec approval layer, not the workflow coordinator's `/approve <project_id>` handler.
+
+### Root cause
+
+- The previous workflow change only allowed Wien in the project state coordinator. It did not change OpenClaw's owner/exec-approval configuration.
+- OpenClaw requires Wien to be present in both `commands.ownerAllowFrom` and `channels.discord.execApprovals.approvers` for parity with Minh.
+
+### Planned narrow fix
+
+- Add only Minh (`620891893659598850`) and Wien (`859783610625556480`) to those two allowlists.
+- Preserve all unrelated config and do not enable wildcard access or `security: "full"`.
+
+### Remote status
+
+- Not applied yet: this session still has no SSH key or secret-provider credential. The host is reachable, but non-interactive SSH returns `Permission denied (publickey,password)`.
+
 ## 2026-08-11 — Allow Wien to approve Curie review leads
 
 ### Request

@@ -70,6 +70,44 @@ Every new task involving the remote OpenClaw should follow this sequence:
 
 Read-only investigation is allowed while discussing. The following always require explicit approval: editing OpenClaw config, changing agent permissions, enabling/disabling sandboxing, changing systemd units, restarting services, installing/updating packages, changing firewall rules, changing credentials, creating/deleting backups, or modifying Docker/Coolify.
 
+### Discord owner and exec-approval parity
+
+If Minh and Wien must have the same OpenClaw owner and Discord exec-approval rights, configure both Discord IDs in both authorization layers. The workflow coordinator's `/approve` permission is separate and does not grant OpenClaw host-exec approval.
+
+The intended non-secret shape is:
+
+```json5
+{
+  commands: {
+    ownerAllowFrom: [
+      "discord:620891893659598850",
+      "discord:859783610625556480",
+    ],
+  },
+  channels: {
+    discord: {
+      execApprovals: {
+        enabled: true,
+        approvers: [
+          "620891893659598850",
+          "859783610625556480",
+        ],
+      },
+    },
+  },
+}
+```
+
+Before applying this live, inspect the current merged policy and preserve unrelated config:
+
+```bash
+openclaw approvals get --gateway
+openclaw config get commands.ownerAllowFrom
+openclaw config get channels.discord.execApprovals
+```
+
+After the narrow merge, validate both policy layers and the Discord path. Do not use `exec-policy preset yolo`, set `security: "full"`, or add `"*"` to an allowlist merely to make the button work. See the [OpenClaw exec-approvals documentation](https://docs.openclaw.ai/tools/exec-approvals) and [Discord channel configuration](https://docs.openclaw.ai/gateway/config-channels).
+
 ## Remote system map
 
 ### Host and runtime
