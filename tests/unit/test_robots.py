@@ -47,6 +47,60 @@ def test_crawl_delay_prefers_specific_agent_and_accepts_fraction() -> None:
     assert policy.crawl_delay("OtherBot") == 7
 
 
+def test_crawl_delay_group_ignores_comment_only_and_inline_comments() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: FirstBot # first member
+        # This comment is not a physical blank line.
+        User-agent: SecondBot # second member
+        # Nor is this one.
+        Crawl-delay: 1.5 # shared delay
+        """
+    )
+
+    assert policy.crawl_delay("FirstBot/1.0") == 1.5
+    assert policy.crawl_delay("SecondBot/1.0") == 1.5
+
+
+def test_physical_blank_line_ends_crawl_delay_group() -> None:
+    """A physical blank line separates groups, even before any rule record."""
+
+    policy = RobotsPolicy.parse("User-agent: FirstBot\n\nUser-agent: SecondBot\nCrawl-delay: 2\n")
+
+    assert policy.crawl_delay("FirstBot/1.0") is None
+    assert policy.crawl_delay("SecondBot/1.0") == 2
+
+
+def test_global_directives_do_not_split_consecutive_user_agents() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: FirstBot
+        Sitemap: https://example.com/sitemap.xml
+        # Global metadata may appear between group members.
+        Host: example.com
+        User-agent: SecondBot
+        Crawl-delay: 3
+        """
+    )
+
+    assert policy.crawl_delay("FirstBot/1.0") == 3
+    assert policy.crawl_delay("SecondBot/1.0") == 3
+
+
+def test_user_agent_after_rule_record_starts_new_crawl_delay_group() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: FirstBot
+        Disallow: /private
+        User-agent: SecondBot
+        Crawl-delay: 4
+        """
+    )
+
+    assert policy.crawl_delay("FirstBot/1.0") is None
+    assert policy.crawl_delay("SecondBot/1.0") == 4
+
+
 @pytest.mark.parametrize("invalid", ["-1", "NaN", "inf", "0", "999999999999"])
 def test_invalid_crawl_delay_is_ignored_with_wildcard_fallback(invalid: str) -> None:
     policy = RobotsPolicy.parse(

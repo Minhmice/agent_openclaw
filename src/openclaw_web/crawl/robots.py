@@ -12,6 +12,8 @@ from openclaw_web.crawl.safety import UnsafeTarget, normalize_url
 DEFAULT_MAX_BYTES = 512 * 1024
 DEFAULT_UNAVAILABLE_DELAY = 5.0
 MAX_CRAWL_DELAY = 86_400.0
+_GROUP_RULE_DIRECTIVES = frozenset({"allow", "crawl-delay", "disallow", "request-rate"})
+_GLOBAL_DIRECTIVES = frozenset({"host", "sitemap"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,21 +36,24 @@ def _parse_delay_rules(text: str) -> tuple[_DelayRule, ...]:
     rules: list[_DelayRule] = []
     agents: list[str] = []
     delay: float | None = None
-    records_started = False
+    rules_started = False
 
     def finish_group() -> None:
-        nonlocal agents, delay, records_started
+        nonlocal agents, delay, rules_started
         if agents and delay is not None:
             rules.append(_DelayRule(tuple(agents), delay))
         agents = []
         delay = None
-        records_started = False
+        rules_started = False
 
-    for raw_line in [*text.splitlines(), ""]:
-        line = raw_line.split("#", 1)[0].strip()
-        if not line:
+    for raw_line in text.splitlines():
+        # A physical blank line ends a group. A comment-only line does not.
+        if not raw_line.strip():
             if agents:
                 finish_group()
+            continue
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
             continue
         if ":" not in line:
             continue
@@ -56,16 +61,22 @@ def _parse_delay_rules(text: str) -> tuple[_DelayRule, ...]:
         directive = directive.strip().casefold()
         value = raw_value.strip()
         if directive == "user-agent":
-            if agents and records_started:
-                finish_group()
             if value:
+                if agents and rules_started:
+                    finish_group()
                 agents.append(value.casefold())
+            continue
+        if directive in _GLOBAL_DIRECTIVES:
+            continue
+        if directive not in _GROUP_RULE_DIRECTIVES:
             continue
         if not agents:
             continue
-        records_started = True
+        rules_started = True
         if directive == "crawl-delay" and delay is None:
             delay = _valid_delay(value)
+    if agents:
+        finish_group()
     return tuple(rules)
 
 
