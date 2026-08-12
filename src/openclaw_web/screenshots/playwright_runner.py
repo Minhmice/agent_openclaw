@@ -1,9 +1,10 @@
 """Safe, deterministic Playwright screenshot orchestration.
 
 Production callers must inject ``url_validator``. It is invoked for the initial
-navigation and every browser request and must enforce the crawler's URL, DNS, and
-redirect policy before returning the exact canonical URL Playwright may request.
-``local_test_mode`` is deliberately limited to loopback HTTP fixtures.
+navigation and every HTTP(S) browser request and must enforce the crawler's URL,
+DNS, and redirect policy before returning the exact canonical URL Playwright may
+request. WebSocket handshakes are blocked before connection. ``local_test_mode``
+is deliberately limited to loopback HTTP fixtures.
 """
 
 from __future__ import annotations
@@ -172,13 +173,21 @@ def _sanitize_text(value: object) -> str:
 
 
 def _sanitize_url(value: object) -> str:
+    return _sanitize_network_url(value, frozenset({"http", "https"}))
+
+
+def _sanitize_websocket_url(value: object) -> str:
+    return _sanitize_network_url(value, frozenset({"ws", "wss"}))
+
+
+def _sanitize_network_url(value: object, schemes: frozenset[str]) -> str:
     try:
         parts = urlsplit(str(value))
         host = parts.hostname
         port = parts.port
     except (TypeError, ValueError):
         return ""
-    if parts.scheme not in {"http", "https"} or host is None:
+    if parts.scheme not in schemes or host is None:
         return ""
     rendered_host = f"[{host}]" if ":" in host else host
     authority = rendered_host if port is None else f"{rendered_host}:{port}"
@@ -332,6 +341,7 @@ class ScreenshotRunner:
                     permissions=[],
                     service_workers="block",
                 )
+                await self._install_websocket_policy(context, failed_requests)
                 await context.add_init_script(_BLOCK_POPUPS_SCRIPT)
                 for viewport in VIEWPORTS:
                     viewport_failed = await self._capture_viewport(
@@ -361,6 +371,29 @@ class ScreenshotRunner:
                     )
                     failed = True
         return failed
+
+    async def _install_websocket_policy(
+        self,
+        context: Any,
+        failed_requests: list[FailedRequest],
+    ) -> None:
+        route_web_socket = getattr(context, "route_web_socket", None)
+        if not callable(route_web_socket):
+            await context.add_init_script(_BLOCK_WEBSOCKETS_SCRIPT)
+            return
+
+        async def block_websocket(route: Any) -> None:
+            if len(failed_requests) < self._limits.max_observations:
+                failed_requests.append(
+                    FailedRequest(
+                        method="WEBSOCKET",
+                        url=_sanitize_websocket_url(_extract_value(route, "url")),
+                        reason="blocked by screenshot policy",
+                    )
+                )
+            await route.close()
+
+        await route_web_socket("**/*", block_websocket)
 
     async def _capture_viewport(
         self,
@@ -699,4 +732,16 @@ const disableFormMethod = (name) => {
 };
 disableFormMethod("submit");
 disableFormMethod("requestSubmit");
+"""
+
+_BLOCK_WEBSOCKETS_SCRIPT = """
+Object.defineProperty(window, "WebSocket", {
+  configurable: false,
+  writable: false,
+  value: class BlockedWebSocket {
+    constructor() {
+      throw new DOMException("WebSocket blocked by screenshot policy", "SecurityError");
+    }
+  },
+});
 """

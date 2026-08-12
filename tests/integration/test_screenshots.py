@@ -55,6 +55,19 @@ class FakeRoute:
         self.url = url
 
 
+class FakeWebSocketRoute:
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.closed = False
+        self.connected = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+    def connect_to_server(self) -> None:
+        self.connected = True
+
+
 class Closable:
     def __init__(self) -> None:
         self.closed = False
@@ -106,6 +119,11 @@ class FakePage:
         await _dispatch(self.route_handler, route)
         if route.action == "abort":
             raise RuntimeError("navigation blocked")
+        if self.context.websocket_url is not None:
+            assert self.context.websocket_handler is not None
+            websocket_route = FakeWebSocketRoute(self.context.websocket_url)
+            self.context.websocket_routes.append(websocket_route)
+            await _dispatch(self.context.websocket_handler, websocket_route)
 
         popup, download, dialog = Closable(), Cancelable(), Dismissable()
         for event, value in (("popup", popup), ("download", download), ("dialog", dialog)):
@@ -152,10 +170,14 @@ class FakeContext:
         fail_viewports: frozenset[str] = frozenset(),
         timeout: bool = False,
         cancel: bool = False,
+        websocket_url: str | None = None,
     ) -> None:
         self.fail_viewports = fail_viewports
         self.timeout = timeout
         self.cancel = cancel
+        self.websocket_url = websocket_url
+        self.websocket_handler: EventHandler | None = None
+        self.websocket_routes: list[FakeWebSocketRoute] = []
         self.pages: list[FakePage] = []
         self.interactions: list[tuple[Closable, Cancelable, Dismissable]] = []
         self.init_scripts: list[str] = []
@@ -163,6 +185,9 @@ class FakeContext:
 
     async def add_init_script(self, script: str) -> None:
         self.init_scripts.append(script)
+
+    async def route_web_socket(self, _pattern: str, handler: EventHandler) -> None:
+        self.websocket_handler = handler
 
     async def new_page(self) -> FakePage:
         page = FakePage(self)
@@ -173,6 +198,14 @@ class FakeContext:
         self.closed = True
 
 
+class FakeLegacyContext:
+    def __init__(self) -> None:
+        self.init_scripts: list[str] = []
+
+    async def add_init_script(self, script: str) -> None:
+        self.init_scripts.append(script)
+
+
 class FakeBrowser:
     def __init__(
         self,
@@ -180,10 +213,12 @@ class FakeBrowser:
         *,
         timeout: bool = False,
         cancel: bool = False,
+        websocket_url: str | None = None,
     ) -> None:
         self.attempts = attempts or [frozenset()]
         self.timeout = timeout
         self.cancel = cancel
+        self.websocket_url = websocket_url
         self.contexts: list[FakeContext] = []
         self.context_options: list[dict[str, object]] = []
         self.closed = False
@@ -195,6 +230,7 @@ class FakeBrowser:
             fail_viewports=failures,
             timeout=self.timeout,
             cancel=self.cancel,
+            websocket_url=self.websocket_url,
         )
         self.contexts.append(context)
         self.context_options.append(kwargs)
@@ -321,6 +357,50 @@ async def test_route_blocks_mutating_requests_and_requires_url_policy(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_websocket_handshake_is_blocked_before_connecting_and_sanitized(
+    tmp_path: Path,
+) -> None:
+    unsafe_url = "ws://user:password@external.invalid/private?token=super-secret"
+    validated: list[str] = []
+
+    async def validator(_source_url: str | None, url: str) -> str:
+        validated.append(url)
+        return url
+
+    browser = FakeBrowser(websocket_url=unsafe_url)
+    result = await ScreenshotRunner(
+        tmp_path,
+        browser=browser,
+        url_validator=validator,
+    ).capture("https://example.test/")
+
+    routes = [route for context in browser.contexts for route in context.websocket_routes]
+    assert routes
+    assert all(route.closed and not route.connected for route in routes)
+    assert unsafe_url not in validated
+    websocket_failures = [item for item in result.failed_requests if item.method == "WEBSOCKET"]
+    assert websocket_failures
+    assert websocket_failures[0].url == "ws://external.invalid/private"
+    assert websocket_failures[0].reason == "blocked by screenshot policy"
+    assert "password" not in repr(websocket_failures)
+    assert "super-secret" not in repr(websocket_failures)
+
+
+@pytest.mark.asyncio
+async def test_websocket_policy_falls_back_before_page_scripts_when_api_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    context = FakeLegacyContext()
+    runner = ScreenshotRunner(tmp_path, browser=FakeBrowser(), local_test_mode=True)
+
+    await runner._install_websocket_policy(context, [])
+
+    assert len(context.init_scripts) == 1
+    assert 'Object.defineProperty(window, "WebSocket"' in context.init_scripts[0]
+    assert "SecurityError" in context.init_scripts[0]
+
+
+@pytest.mark.asyncio
 async def test_output_paths_cannot_escape_owned_root(tmp_path: Path) -> None:
     output = tmp_path / "evidence"
     browser = FakeBrowser()
@@ -364,10 +444,19 @@ async def test_timeout_and_cancellation_close_every_owned_resource(tmp_path: Pat
 
 class _FixtureHandler(BaseHTTPRequestHandler):
     submissions = 0
+    websocket_handshakes = 0
 
     def do_GET(self) -> None:
+        if self.headers.get("Upgrade", "").casefold() == "websocket":
+            type(self).websocket_handshakes += 1
+            self.send_error(400)
+            return
         body = b"""<!doctype html><html><body>
         <a href='/book'>Book now</a><form method='post'><input name='email'><button>Send</button></form>
+        <script>
+        const socketUrl = `ws://${location.host}/socket?token=fixture-secret`;
+        try { new WebSocket(socketUrl); } catch (_) {}
+        </script>
         </body></html>"""
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
@@ -399,6 +488,7 @@ async def test_real_chromium_local_fixture_smoke(tmp_path: Path) -> None:
 
     await browser.close()
     _FixtureHandler.submissions = 0
+    _FixtureHandler.websocket_handshakes = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FixtureHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -413,3 +503,8 @@ async def test_real_chromium_local_fixture_smoke(tmp_path: Path) -> None:
     assert result.status == "complete", result.failures
     assert len(result.screenshots) == 6
     assert _FixtureHandler.submissions == 0
+    assert _FixtureHandler.websocket_handshakes == 0
+    websocket_failures = [item for item in result.failed_requests if item.method == "WEBSOCKET"]
+    assert websocket_failures
+    assert all(item.url.endswith("/socket") for item in websocket_failures)
+    assert "fixture-secret" not in repr(websocket_failures)
