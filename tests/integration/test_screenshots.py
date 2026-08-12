@@ -201,9 +201,32 @@ class FakeContext:
 class FakeLegacyContext:
     def __init__(self) -> None:
         self.init_scripts: list[str] = []
+        self.page_creations = 0
+        self.closed = False
 
     async def add_init_script(self, script: str) -> None:
         self.init_scripts.append(script)
+
+    async def new_page(self) -> FakePage:
+        self.page_creations += 1
+        raise AssertionError("page creation must remain unreachable without WebSocket routing")
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeLegacyBrowser:
+    def __init__(self) -> None:
+        self.contexts: list[FakeLegacyContext] = []
+        self.closed = False
+
+    async def new_context(self, **_kwargs: object) -> FakeLegacyContext:
+        context = FakeLegacyContext()
+        self.contexts.append(context)
+        return context
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class FakeBrowser:
@@ -387,17 +410,40 @@ async def test_websocket_handshake_is_blocked_before_connecting_and_sanitized(
 
 
 @pytest.mark.asyncio
-async def test_websocket_policy_falls_back_before_page_scripts_when_api_is_unavailable(
+async def test_missing_native_websocket_policy_fails_closed_before_page_creation(
     tmp_path: Path,
 ) -> None:
-    context = FakeLegacyContext()
-    runner = ScreenshotRunner(tmp_path, browser=FakeBrowser(), local_test_mode=True)
+    browser = FakeLegacyBrowser()
 
-    await runner._install_websocket_policy(context, [])
+    async def factory() -> FakeLegacyBrowser:
+        return browser
 
-    assert len(context.init_scripts) == 1
-    assert 'Object.defineProperty(window, "WebSocket"' in context.init_scripts[0]
-    assert "SecurityError" in context.init_scripts[0]
+    async def validator(_source_url: str | None, url: str) -> str:
+        return url
+
+    result = await ScreenshotRunner(
+        tmp_path,
+        browser_factory=factory,
+        url_validator=validator,
+    ).capture("http://user:password@127.0.0.1:8765/private?token=super-secret")
+
+    assert result.status == "partial"
+    assert result.attempts == 2
+    assert result.screenshots == ()
+    assert result.observations == ()
+    assert result.console_errors == ()
+    assert result.failed_requests == ()
+    assert len(result.failures) == 2
+    assert all(failure.phase == "attempt" for failure in result.failures)
+    assert all("WebSocket routing capability" in failure.reason for failure in result.failures)
+    assert all(len(failure.reason) <= 500 for failure in result.failures)
+    assert "password" not in repr(result)
+    assert "super-secret" not in repr(result)
+    assert len(browser.contexts) == 2
+    assert all(context.page_creations == 0 for context in browser.contexts)
+    assert all(context.init_scripts == [] for context in browser.contexts)
+    assert all(context.closed for context in browser.contexts)
+    assert browser.closed
 
 
 @pytest.mark.asyncio

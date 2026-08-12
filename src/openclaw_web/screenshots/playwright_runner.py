@@ -379,8 +379,7 @@ class ScreenshotRunner:
     ) -> None:
         route_web_socket = getattr(context, "route_web_socket", None)
         if not callable(route_web_socket):
-            await context.add_init_script(_BLOCK_WEBSOCKETS_SCRIPT)
-            return
+            raise NotImplementedError("native WebSocket routing capability is required")
 
         async def block_websocket(route: Any) -> None:
             if len(failed_requests) < self._limits.max_observations:
@@ -732,16 +731,4 @@ const disableFormMethod = (name) => {
 };
 disableFormMethod("submit");
 disableFormMethod("requestSubmit");
-"""
-
-_BLOCK_WEBSOCKETS_SCRIPT = """
-Object.defineProperty(window, "WebSocket", {
-  configurable: false,
-  writable: false,
-  value: class BlockedWebSocket {
-    constructor() {
-      throw new DOMException("WebSocket blocked by screenshot policy", "SecurityError");
-    }
-  },
-});
 """
