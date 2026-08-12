@@ -14,7 +14,7 @@ def test_robots_disallow_and_delay_are_honored() -> None:
     assert policy.crawl_delay("AgentOpenClawAudit/1.0") == 3
 
 
-def test_robotparser_handles_specific_groups_allow_precedence_and_query() -> None:
+def test_specific_groups_allow_precedence_and_query() -> None:
     policy = RobotsPolicy.parse(
         """
         User-agent: AgentOpenClawAudit
@@ -32,6 +32,155 @@ def test_robotparser_handles_specific_groups_allow_precedence_and_query() -> Non
     assert not policy.allowed("OtherBot", "https://example.com/fallback?q=1")
 
 
+def test_rule_order_does_not_override_longest_match() -> None:
+    policy = RobotsPolicy.parse("User-agent: *\nAllow: /\nDisallow: /private\n")
+
+    assert policy.allowed("Bot", "https://example.com/public")
+    assert not policy.allowed("Bot", "https://example.com/private/report")
+
+
+def test_repeated_matching_groups_are_merged() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: AuditBot
+        Disallow: /private
+
+        User-agent: OtherBot
+        Disallow: /
+
+        User-agent: auditbot
+        Allow: /private/public
+        """
+    )
+
+    assert policy.allowed("AUDITBOT/1.0", "https://example.com/private/public/report")
+    assert not policy.allowed("AUDITBOT/1.0", "https://example.com/private/secret")
+
+
+def test_repeated_wildcard_groups_are_merged_without_a_specific_match() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: *
+        Disallow: /private
+
+        User-agent: AuditBot
+        Disallow: /
+
+        User-agent: *
+        Allow: /private/public
+        """
+    )
+
+    assert policy.allowed("OtherBot", "https://example.com/private/public/report")
+    assert not policy.allowed("OtherBot", "https://example.com/private/secret")
+
+
+def test_most_specific_matching_product_token_wins() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: Audit
+        Disallow: /
+
+        User-agent: AuditBot
+        Allow: /
+
+        User-agent: *
+        Disallow: /
+        """
+    )
+
+    assert policy.allowed("Company-AUDITBOT/2.0", "https://example.com/report")
+    assert not policy.allowed("UnrelatedBot", "https://example.com/report")
+
+
+def test_longest_rule_wins_and_allow_wins_equal_specificity() -> None:
+    longest = RobotsPolicy.parse("User-agent: *\nDisallow: /private\nAllow: /private/public\n")
+    equal = RobotsPolicy.parse("User-agent: *\nDisallow: /same\nAllow: /same\n")
+
+    assert longest.allowed("Bot", "https://example.com/private/public/report")
+    assert not longest.allowed("Bot", "https://example.com/private/secret")
+    assert equal.allowed("Bot", "https://example.com/same")
+
+
+def test_wildcard_and_trailing_end_anchor_are_supported() -> None:
+    policy = RobotsPolicy.parse("User-agent: *\nDisallow: /*.php$\nAllow: /public/*.php$\n")
+
+    assert not policy.allowed("Bot", "https://example.com/index.php")
+    assert policy.allowed("Bot", "https://example.com/index.php?id=1")
+    assert policy.allowed("Bot", "https://example.com/public/index.php")
+    assert policy.allowed("Bot", "https://example.com/public/index.php?id=1")
+
+
+def test_end_anchor_without_a_path_does_not_match_nonempty_url_paths() -> None:
+    policy = RobotsPolicy.parse("User-agent: *\nDisallow: $\n")
+
+    assert policy.allowed("Bot", "https://example.com/")
+
+
+def test_empty_allow_and_disallow_rules_have_no_effect() -> None:
+    policy = RobotsPolicy.parse("User-agent: *\nDisallow:\nAllow:\nDisallow: /private\n")
+
+    assert policy.allowed("Bot", "https://example.com/")
+    assert not policy.allowed("Bot", "https://example.com/private")
+
+
+def test_rules_match_normalized_path_and_query_case_sensitively() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: *
+        Disallow: /search?private=1
+        Disallow: /CaseSensitive
+        """
+    )
+
+    assert not policy.allowed("Bot", "https://example.com/search?private=1&view=full")
+    assert policy.allowed("Bot", "https://example.com/search?private=2")
+    assert not policy.allowed("Bot", "https://example.com/CaseSensitive")
+    assert policy.allowed("Bot", "https://example.com/casesensitive")
+
+
+@pytest.mark.parametrize("rule_path", ["/caf%C3%A9", "/café"])
+@pytest.mark.parametrize("url_path", ["/caf%C3%A9", "/café"])
+def test_percent_encoded_and_unicode_paths_compare_consistently(
+    rule_path: str, url_path: str
+) -> None:
+    policy = RobotsPolicy.parse(f"User-agent: *\nDisallow: {rule_path}\n")
+
+    assert not policy.allowed("Bot", f"https://example.com{url_path}")
+
+
+def test_percent_encoded_reserved_octet_remains_distinct_from_a_separator() -> None:
+    policy = RobotsPolicy.parse("User-agent: *\nDisallow: /private%2fsecret\n")
+
+    assert not policy.allowed("Bot", "https://example.com/private%2Fsecret")
+    assert policy.allowed("Bot", "https://example.com/private/secret")
+
+
+def test_group_boundaries_and_global_metadata_apply_to_access_rules() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: FirstBot
+        Sitemap: https://example.com/sitemap.xml
+        User-agent: SecondBot
+        Disallow: /shared
+        User-agent: ThirdBot
+        Disallow: /third
+
+        User-agent: FourthBot
+
+        User-agent: FifthBot
+        Disallow: /fifth
+        """
+    )
+
+    assert not policy.allowed("FirstBot", "https://example.com/shared")
+    assert not policy.allowed("SecondBot", "https://example.com/shared")
+    assert policy.allowed("ThirdBot", "https://example.com/shared")
+    assert not policy.allowed("ThirdBot", "https://example.com/third")
+    assert policy.allowed("FourthBot", "https://example.com/fifth")
+    assert not policy.allowed("FifthBot", "https://example.com/fifth")
+
+
 def test_crawl_delay_prefers_specific_agent_and_accepts_fraction() -> None:
     policy = RobotsPolicy.parse(
         """
@@ -45,6 +194,27 @@ def test_crawl_delay_prefers_specific_agent_and_accepts_fraction() -> None:
 
     assert policy.crawl_delay("AgentOpenClawAudit/1.0") == 0.25
     assert policy.crawl_delay("OtherBot") == 7
+
+
+def test_crawl_delay_uses_the_same_most_specific_merged_groups() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: Audit
+        Crawl-delay: 9
+
+        User-agent: AuditBot
+        Disallow: /private
+
+        User-agent: auditbot
+        Crawl-delay: 0.75
+
+        User-agent: *
+        Crawl-delay: 4
+        """
+    )
+
+    assert policy.crawl_delay("AUDITBOT/1.0") == 0.75
+    assert policy.crawl_delay("OtherBot") == 4
 
 
 def test_crawl_delay_group_ignores_comment_only_and_inline_comments() -> None:
@@ -143,3 +313,10 @@ def test_empty_malformed_and_oversized_policies_are_deterministic() -> None:
     assert RobotsPolicy.parse("not a directive\n:\n").allowed("Bot", "https://example.com/")
     with pytest.raises(ValueError, match="maximum size"):
         RobotsPolicy.parse("x" * 33, max_bytes=32)
+
+
+def test_match_input_is_bounded_by_the_policy_size_limit() -> None:
+    policy = RobotsPolicy.parse("", max_bytes=32)
+
+    with pytest.raises(UnsafeTarget, match="maximum size"):
+        policy.allowed("Bot", f"https://example.com/{'x' * 33}")
