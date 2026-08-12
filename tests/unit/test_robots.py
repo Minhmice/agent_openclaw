@@ -139,6 +139,46 @@ def test_rules_match_normalized_path_and_query_case_sensitively() -> None:
     assert policy.allowed("Bot", "https://example.com/casesensitive")
 
 
+@pytest.mark.parametrize("rule_path", ["/Az09-._~", "/%41%7A%30%39%2D%2E%5F%7E"])
+@pytest.mark.parametrize("url_path", ["/Az09-._~", "/%41%7A%30%39%2D%2E%5F%7E"])
+def test_raw_and_percent_encoded_ascii_unreserved_octets_compare_consistently(
+    rule_path: str, url_path: str
+) -> None:
+    policy = RobotsPolicy.parse(f"User-agent: *\nDisallow: {rule_path}\n")
+
+    assert not policy.allowed("Bot", f"https://example.com{url_path}")
+
+
+def test_encoded_unreserved_allow_rule_wins_as_the_longest_match() -> None:
+    policy = RobotsPolicy.parse(
+        "User-agent: *\nDisallow: /private\nAllow: /private/%70%75%62%6C%69%63\n"
+    )
+
+    assert policy.allowed("Bot", "https://example.com/private/public/report")
+    assert not policy.allowed("Bot", "https://example.com/private/secret")
+
+
+@pytest.mark.parametrize(
+    ("encoded_literal", "raw_literal"),
+    [("%2A", "*"), ("%24", "$")],
+)
+def test_percent_encoded_rule_metacharacters_match_literal_uri_characters(
+    encoded_literal: str, raw_literal: str
+) -> None:
+    policy = RobotsPolicy.parse(f"User-agent: *\nDisallow: /literal{encoded_literal}value\n")
+
+    assert not policy.allowed("Bot", f"https://example.com/literal{raw_literal}value")
+    assert not policy.allowed("Bot", f"https://example.com/literal{encoded_literal}value")
+
+
+def test_percent_encoded_rule_metacharacters_do_not_become_matcher_syntax() -> None:
+    literal_wildcard = RobotsPolicy.parse("User-agent: *\nDisallow: /literal%2Avalue\n")
+    literal_dollar = RobotsPolicy.parse("User-agent: *\nDisallow: /literal%24\n")
+
+    assert literal_wildcard.allowed("Bot", "https://example.com/literal-any-value")
+    assert not literal_dollar.allowed("Bot", "https://example.com/literal$continued")
+
+
 @pytest.mark.parametrize("rule_path", ["/caf%C3%A9", "/café"])
 @pytest.mark.parametrize("url_path", ["/caf%C3%A9", "/café"])
 def test_percent_encoded_and_unicode_paths_compare_consistently(
@@ -154,6 +194,14 @@ def test_percent_encoded_reserved_octet_remains_distinct_from_a_separator() -> N
 
     assert not policy.allowed("Bot", "https://example.com/private%2Fsecret")
     assert policy.allowed("Bot", "https://example.com/private/secret")
+
+
+@pytest.mark.parametrize("invalid_escape", ["%", "%G0", "%0G"])
+def test_invalid_uri_percent_escapes_are_rejected(invalid_escape: str) -> None:
+    policy = RobotsPolicy.parse("User-agent: *\nDisallow: /private\n")
+
+    with pytest.raises(UnsafeTarget, match="invalid percent escape"):
+        policy.allowed("Bot", f"https://example.com/private{invalid_escape}")
 
 
 def test_group_boundaries_and_global_metadata_apply_to_access_rules() -> None:

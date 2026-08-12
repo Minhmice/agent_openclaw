@@ -15,10 +15,11 @@ MAX_CRAWL_DELAY = 86_400.0
 _GROUP_RULE_DIRECTIVES = frozenset({"allow", "crawl-delay", "disallow", "request-rate"})
 _GLOBAL_DIRECTIVES = frozenset({"host", "sitemap"})
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+_ASCII_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
 
-def _canonical_match_text(value: str) -> str:
-    """Return stable ASCII text while preserving percent-encoded octets."""
+def _canonical_match_text(value: str, *, rule_pattern: bool) -> str:
+    """Return stable ASCII text while preserving rule matcher syntax."""
 
     rendered: list[str] = []
     index = 0
@@ -30,11 +31,17 @@ def _canonical_match_text(value: str) -> str:
             and value[index + 1] in _HEX_DIGITS
             and value[index + 2] in _HEX_DIGITS
         ):
-            rendered.append(value[index : index + 3].upper())
+            byte = int(value[index + 1 : index + 3], 16)
+            decoded = chr(byte)
+            rendered.append(decoded if decoded in _ASCII_UNRESERVED else f"%{byte:02X}")
             index += 3
             continue
         if ord(character) > 127:
             rendered.extend(f"%{byte:02X}" for byte in character.encode("utf-8"))
+        elif character in {"*", "$"} and not (
+            rule_pattern and (character == "*" or index == len(value) - 1)
+        ):
+            rendered.append(f"%{ord(character):02X}")
         else:
             rendered.append(character)
         index += 1
@@ -78,7 +85,7 @@ class _Rule:
     def parse(cls, *, allow: bool, raw_pattern: str) -> _Rule | None:
         if not raw_pattern:
             return None
-        pattern = _canonical_match_text(raw_pattern)
+        pattern = _canonical_match_text(raw_pattern, rule_pattern=True)
         end_anchored = pattern.endswith("$")
         if end_anchored:
             pattern = pattern[:-1]
@@ -313,7 +320,7 @@ class RobotsPolicy:
             return True
         parsed = urlsplit(normalized)
         path_query = parsed.path + (f"?{parsed.query}" if parsed.query else "")
-        match_value = _canonical_match_text(path_query)
+        match_value = _canonical_match_text(path_query, rule_pattern=False)
         specific_groups, wildcard_groups = self._matching_groups(user_agent)
         selected_groups = specific_groups or wildcard_groups
         best_specificity = -1
