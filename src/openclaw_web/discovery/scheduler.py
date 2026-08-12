@@ -48,6 +48,13 @@ def _normalize(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+_APPROVED_COHORT_BY_NORMALIZED_ID = {_normalize(cohort): cohort for cohort in APPROVED_COHORTS}
+
+
+def _contains_keyword(corpus: str, keyword: str) -> bool:
+    return f" {keyword} " in f" {corpus} "
+
+
 @dataclass(frozen=True, slots=True)
 class CohortAssignment:
     cohort: str
@@ -66,11 +73,15 @@ def assign_cohort(
 ) -> CohortAssignment:
     """Assign one approved cohort from observed text, with a gated AI fallback."""
 
-    corpus = " ".join(
+    normalized_text = tuple(
         filter(None, (_normalize(industry_hint), _normalize(name), _normalize(description)))
     )
+    for text in normalized_text:
+        if cohort := _APPROVED_COHORT_BY_NORMALIZED_ID.get(text):
+            return CohortAssignment(cohort, True, ClaimStatus.OBSERVED, (cohort,))
+    corpus = " ".join(normalized_text)
     for cohort, keywords in _KEYWORDS:
-        matched = tuple(keyword for keyword in keywords if keyword in corpus)
+        matched = tuple(keyword for keyword in keywords if _contains_keyword(corpus, keyword))
         if matched:
             return CohortAssignment(cohort, True, ClaimStatus.OBSERVED, matched)
     if ai_claim_status is ClaimStatus.INFERRED and ai_suggestion in APPROVED_COHORTS:

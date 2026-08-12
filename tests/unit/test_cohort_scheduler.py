@@ -61,6 +61,54 @@ def test_keyword_assignment_is_normalized_and_precedence_wins_overlap() -> None:
         result.cohort = "other"  # type: ignore[misc]
 
 
+def test_hospitality_keyword_does_not_match_healthcare_hospital_substring() -> None:
+    result = assign_cohort(industry_hint="hospitality")
+
+    assert result.cohort == "hospitality"
+    assert result.evidence_keywords == ("hospitality",)
+
+
+@pytest.mark.parametrize("cohort", APPROVED_COHORTS)
+def test_exact_approved_cohort_ids_map_to_themselves(cohort: str) -> None:
+    result = assign_cohort(industry_hint=cohort)
+
+    assert result.cohort == cohort
+    assert result.deterministic is True
+    assert result.claim_status is ClaimStatus.OBSERVED
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "hospitality suite",
+        "space planning",
+        "microfactory tooling",
+        "surreal estate photography",
+    ),
+)
+def test_keywords_do_not_match_inside_longer_words(text: str) -> None:
+    expected = "hospitality" if text == "hospitality suite" else "other"
+    assert assign_cohort(description=text).cohort == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "cohort", "keyword"),
+    (
+        ("Dịch vụ tư-vấn pháp lý", "professional-services", "tu van"),
+        ("Nền tảng THƯƠNG-MẠI, ĐIỆN.TỬ", "ecommerce", "thuong mai dien tu"),
+        ("Dự án bất_động/sản", "real-estate", "bat dong san"),
+        ("Premium real...estate listings", "real-estate", "real estate"),
+    ),
+)
+def test_multiword_keywords_match_across_punctuation_and_accents(
+    text: str, cohort: str, keyword: str
+) -> None:
+    result = assign_cohort(description=text)
+
+    assert result.cohort == cohort
+    assert keyword in result.evidence_keywords
+
+
 def test_deterministic_match_beats_ai_and_ai_requires_inferred_status() -> None:
     deterministic = assign_cohort(
         industry_hint="nhà máy sản xuất",
