@@ -10,6 +10,16 @@ from openclaw_web.crawl.service import CrawlLimits, WebsiteCrawler
 PUBLIC_IP = "93.184.216.34"
 
 
+class PeerStream:
+    def __init__(self, host: str) -> None:
+        self._host = host
+
+    def get_extra_info(self, name: str) -> object:
+        if name == "server_addr":
+            return (self._host, 443)
+        return None
+
+
 def public_resolver(_host: str) -> Iterable[str]:
     return (PUBLIC_IP,)
 
@@ -30,11 +40,105 @@ def client_for(routes: dict[str, httpx.Response | Exception], requests: list[str
         if isinstance(response, Exception):
             raise response
         if response is None:
-            return httpx.Response(404, text="missing")
+            response = httpx.Response(404, text="missing")
         response.request = request
+        response.extensions.setdefault("network_stream", PeerStream(PUBLIC_IP))
         return response
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False)
+
+
+@pytest.mark.asyncio
+async def test_crawler_rejects_response_from_peer_outside_validated_dns_answers() -> None:
+    requested: list[str] = []
+    mismatched_page = html("must not be accepted")
+    mismatched_page.extensions["network_stream"] = PeerStream("1.1.1.1")
+    client = client_for(
+        {
+            "https://example.com/robots.txt": httpx.Response(404),
+            "https://example.com/": mismatched_page,
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(client=client, resolver=public_resolver).crawl(
+        "https://example.com/"
+    )
+
+    assert result.pages == ()
+    assert len(result.failures) == 1
+    assert result.failures[0].reason == "page fetch failed"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_crawler_fails_closed_when_connected_peer_identity_is_unavailable() -> None:
+    requested: list[str] = []
+    unidentified_page = html("must not be accepted")
+    unidentified_page.extensions["network_stream"] = object()
+    client = client_for(
+        {
+            "https://example.com/robots.txt": httpx.Response(404),
+            "https://example.com/": unidentified_page,
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(client=client, resolver=public_resolver).crawl(
+        "https://example.com/"
+    )
+
+    assert result.pages == ()
+    assert len(result.failures) == 1
+    assert result.failures[0].reason == "page fetch failed"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_crawler_rejects_robots_response_from_mismatched_peer() -> None:
+    requested: list[str] = []
+    mismatched_robots = httpx.Response(404)
+    mismatched_robots.extensions["network_stream"] = PeerStream("1.1.1.1")
+    client = client_for(
+        {
+            "https://example.com/robots.txt": mismatched_robots,
+            "https://example.com/": html("must not be fetched"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(client=client, resolver=public_resolver).crawl(
+        "https://example.com/"
+    )
+
+    assert result.pages == ()
+    assert result.failures[0].reason == "robots policy unreachable"
+    assert "https://example.com/" not in requested
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_crawler_rejects_redirect_response_from_mismatched_peer() -> None:
+    requested: list[str] = []
+    mismatched_redirect = httpx.Response(302, headers={"Location": "/destination"})
+    mismatched_redirect.extensions["network_stream"] = PeerStream("1.1.1.1")
+    client = client_for(
+        {
+            "https://example.com/robots.txt": httpx.Response(404),
+            "https://example.com/": mismatched_redirect,
+            "https://example.com/destination": html("must not be fetched"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(client=client, resolver=public_resolver).crawl(
+        "https://example.com/"
+    )
+
+    assert result.pages == ()
+    assert result.failures[0].reason == "page fetch failed"
+    assert "https://example.com/destination" not in requested
+    await client.aclose()
 
 
 @pytest.mark.asyncio
@@ -232,6 +336,103 @@ async def test_cross_site_redirect_is_rejected_before_destination_request() -> N
 
     assert result.failures[-1].reason == "redirect leaves website"
     assert "https://other.net/private" not in requested
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_same_site_cross_origin_redirect_obeys_destination_robots() -> None:
+    requested: list[str] = []
+    client = client_for(
+        {
+            "https://www.example.com/robots.txt": httpx.Response(404),
+            "https://www.example.com/": httpx.Response(
+                302, headers={"Location": "https://shop.example.com/private"}
+            ),
+            "https://shop.example.com/robots.txt": httpx.Response(
+                200,
+                text="User-agent: *\nDisallow: /private\n",
+                headers={"Content-Type": "text/plain"},
+            ),
+            "https://shop.example.com/private": html("must not be fetched"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(client=client, resolver=public_resolver).crawl(
+        "https://www.example.com/"
+    )
+
+    assert result.pages == ()
+    assert result.failures[0].reason == "robots disallowed"
+    assert "https://shop.example.com/robots.txt" in requested
+    assert "https://shop.example.com/private" not in requested
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_same_site_cross_origin_redirect_fails_closed_when_robots_unreachable() -> None:
+    requested: list[str] = []
+    client = client_for(
+        {
+            "https://www.example.com/robots.txt": httpx.Response(404),
+            "https://www.example.com/": httpx.Response(
+                302, headers={"Location": "https://shop.example.com/private"}
+            ),
+            "https://shop.example.com/robots.txt": httpx.ConnectError("token=secret"),
+            "https://shop.example.com/private": html("must not be fetched"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(client=client, resolver=public_resolver).crawl(
+        "https://www.example.com/"
+    )
+
+    assert result.pages == ()
+    assert result.failures[0].reason == "robots policy unreachable"
+    assert "https://shop.example.com/private" not in requested
+    assert all("secret" not in failure.reason for failure in result.failures)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_same_site_cross_origin_redirect_uses_destination_crawl_delay() -> None:
+    requested: list[str] = []
+    times = iter((0.0, 0.0, 0.0))
+    sleeps: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    client = client_for(
+        {
+            "https://www.example.com/robots.txt": httpx.Response(404),
+            "https://www.example.com/": httpx.Response(
+                302, headers={"Location": "https://shop.example.com/first"}
+            ),
+            "https://shop.example.com/robots.txt": httpx.Response(
+                200,
+                text="User-agent: *\nAllow: /\nCrawl-delay: 2\n",
+                headers={"Content-Type": "text/plain"},
+            ),
+            "https://shop.example.com/first": httpx.Response(
+                302, headers={"Location": "/final"}
+            ),
+            "https://shop.example.com/final": html("Final"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(
+        client=client,
+        resolver=public_resolver,
+        monotonic=lambda: next(times),
+        sleeper=sleep,
+    ).crawl("https://www.example.com/")
+
+    assert [page.url for page in result.pages] == ["https://shop.example.com/final"]
+    assert requested.count("https://shop.example.com/robots.txt") == 1
+    assert sleeps == [2.0]
     await client.aclose()
 
 

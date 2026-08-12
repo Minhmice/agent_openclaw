@@ -22,6 +22,7 @@ from openclaw_web.crawl.safety import (
     normalize_url,
     resolve_and_validate,
     validate_redirect,
+    validate_resolved_ips,
 )
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -33,6 +34,7 @@ _PRIORITY_TERMS: tuple[tuple[int, tuple[str, ...]], ...] = (
 )
 _USER_AGENT = "OpenClawWebAudit/1.0"
 _Extractor: TypeAlias = tldextract.TLDExtract
+_PolicyLoader: TypeAlias = Callable[[str], Awaitable[RobotsPolicy]]
 
 
 def _default_resolver(host: str) -> tuple[str, ...]:
@@ -177,6 +179,27 @@ class WebsiteCrawler:
             content.extend(chunk)
         return bytes(content)
 
+    @staticmethod
+    def _validate_connected_peer(
+        response: httpx.Response, validated_addresses: tuple[object, ...]
+    ) -> None:
+        stream = response.extensions.get("network_stream")
+        get_extra_info = getattr(stream, "get_extra_info", None)
+        if not callable(get_extra_info):
+            raise UnsafeTarget("connected peer identity is unavailable")
+        try:
+            peer = get_extra_info("server_addr")
+        except Exception:  # noqa: BLE001 - transports have no shared introspection error type.
+            raise UnsafeTarget("connected peer identity is unavailable") from None
+        if not isinstance(peer, (tuple, list)) or not peer:
+            raise UnsafeTarget("connected peer identity is unavailable")
+        try:
+            peer_address = validate_resolved_ips((peer[0],))[0]
+        except UnsafeTarget:
+            raise UnsafeTarget("connected peer identity is invalid") from None
+        if peer_address not in validated_addresses:
+            raise UnsafeTarget("connected peer does not match validated address")
+
     async def _request(
         self,
         url: str,
@@ -185,16 +208,31 @@ class WebsiteCrawler:
         delay: float | None = None,
         allowed_site: str | None = None,
         allowed_origin: str | None = None,
+        policy_loader: _PolicyLoader | None = None,
     ) -> tuple[httpx.Response, bytes, str]:
         current = normalize_url(url)
         visited = {current}
         for redirect_count in range(self._limits.max_redirects + 1):
             host = urlsplit(current).hostname or ""
-            resolve_and_validate(host, self._resolver)
-            await self._limiter.wait(_origin(current), delay)
+            validated_addresses = resolve_and_validate(host, self._resolver)
+            current_origin = _origin(current)
+            current_delay = delay
+            if policy_loader is not None:
+                policy = await policy_loader(current_origin)
+                if policy.fetch_outcome is RobotsFetchOutcome.UNREACHABLE:
+                    raise ValueError("robots policy unreachable")
+                try:
+                    allowed = policy.allowed(_USER_AGENT, current)
+                except UnsafeTarget:
+                    allowed = False
+                if not allowed:
+                    raise ValueError("robots disallowed")
+                current_delay = policy.crawl_delay(_USER_AGENT)
+            await self._limiter.wait(current_origin, current_delay)
             async with self._client.stream(
                 "GET", current, headers={"Accept": "text/html,application/xhtml+xml", "User-Agent": _USER_AGENT}
             ) as response:
+                self._validate_connected_peer(response, validated_addresses)
                 if response.status_code in _REDIRECT_STATUSES:
                     if redirect_count >= self._limits.max_redirects:
                         raise ValueError("redirect limit exceeded")
@@ -243,14 +281,17 @@ class WebsiteCrawler:
         return RobotsPolicy.unreachable("server failure", origin=origin)
 
     async def _fetch_page(
-        self, url: str, policy: RobotsPolicy, *, allowed_site: str
+        self,
+        url: str,
+        *,
+        allowed_site: str,
+        policy_loader: _PolicyLoader,
     ) -> ExtractedPage:
-        delay = policy.crawl_delay(_USER_AGENT)
         response, body, final_url = await self._request(
             url,
             maximum=self._limits.max_body_bytes,
-            delay=delay,
             allowed_site=allowed_site,
+            policy_loader=policy_loader,
         )
         if not 200 <= response.status_code < 300:
             raise ValueError("page returned non-success status")
@@ -282,6 +323,13 @@ class WebsiteCrawler:
         failures: list[CrawlFailure] = []
         attempts = 0
 
+        async def policy_for(origin: str) -> RobotsPolicy:
+            policy = policies.get(origin)
+            if policy is None:
+                policy = await self._robots_policy(origin)
+                policies[origin] = policy
+            return policy
+
         while frontier and attempts < self._limits.max_pages:
             _rank, depth, url = heapq.heappop(frontier)
             if url in attempted:
@@ -289,10 +337,7 @@ class WebsiteCrawler:
             attempted.add(url)
             attempts += 1
             origin = _origin(url)
-            policy = policies.get(origin)
-            if policy is None:
-                policy = await self._robots_policy(origin)
-                policies[origin] = policy
+            policy = await policy_for(origin)
             if policy.fetch_outcome is RobotsFetchOutcome.UNREACHABLE:
                 failures.append(CrawlFailure(url, "robots policy unreachable"))
                 continue
@@ -304,7 +349,11 @@ class WebsiteCrawler:
                 failures.append(CrawlFailure(url, "robots disallowed"))
                 continue
             try:
-                page = await self._fetch_page(url, policy, allowed_site=site)
+                page = await self._fetch_page(
+                    url,
+                    allowed_site=site,
+                    policy_loader=policy_for,
+                )
             except asyncio.CancelledError:
                 raise
             except (httpx.HTTPError, UnsafeTarget):
@@ -317,6 +366,8 @@ class WebsiteCrawler:
                     "redirect limit exceeded",
                     "redirect leaves origin",
                     "redirect leaves website",
+                    "robots policy unreachable",
+                    "robots disallowed",
                     "unsafe crawl target",
                     "response body exceeds byte limit",
                     "invalid content length",
