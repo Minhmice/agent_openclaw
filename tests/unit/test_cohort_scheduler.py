@@ -4,11 +4,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from openclaw_web import discovery
 from openclaw_web.discovery.scheduler import (
     APPROVED_COHORTS,
     CohortCandidate,
     CohortConfigError,
     SchedulerCursor,
+    SchedulerResult,
     allocate_cohort_budget,
     assign_cohort,
     load_cohort_config,
@@ -343,6 +345,128 @@ def test_persisted_scheduler_cursor_survives_changing_eligible_cohorts() -> None
         "m-b",
     ]
     assert first.next_cursor != cursor
+
+
+def _run_single_cohort_window(
+    identities: tuple[str, ...], cursor: SchedulerCursor
+) -> SchedulerResult:
+    return schedule_candidates_detailed(
+        [CohortCandidate(identity, "manufacturer") for identity in identities],
+        {"manufacturer": 1},
+        overall_cap=1,
+        cursor=cursor,
+    )
+
+
+def test_scheduler_cursor_uses_identity_anchor_when_candidate_is_inserted_before_it() -> None:
+    first = _run_single_cohort_window(("b", "c"), SchedulerCursor())
+    second = _run_single_cohort_window(("a", "b", "c"), first.next_cursor)
+
+    assert [item.identity for item in first.selected] == ["b"]
+    assert [item.identity for item in second.selected] == ["c"]
+
+
+def test_scheduler_cursor_uses_identity_anchor_when_candidate_before_it_is_removed() -> None:
+    first = _run_single_cohort_window(("a", "b", "c"), SchedulerCursor())
+    second = _run_single_cohort_window(("b", "c"), first.next_cursor)
+
+    assert [item.identity for item in first.selected + second.selected] == ["a", "b"]
+
+
+def test_scheduler_cursor_uses_lexical_successor_when_anchor_is_removed() -> None:
+    anchor_index = APPROVED_COHORTS.index("manufacturer")
+    anchors: list[str | None] = [None] * len(APPROVED_COHORTS)
+    anchors[anchor_index] = "b"
+
+    result = _run_single_cohort_window(("a", "c", "d"), SchedulerCursor(0, anchors))
+
+    assert [item.identity for item in result.selected] == ["c"]
+
+
+def test_scheduler_cursor_wraps_and_same_identity_can_return() -> None:
+    cursor = SchedulerCursor()
+    selected: list[str] = []
+    for identities in (("a", "b"), ("a", "b"), ("a", "b"), ("b",), ("a", "b")):
+        result = _run_single_cohort_window(identities, cursor)
+        selected.append(result.selected[0].identity)
+        cursor = result.next_cursor
+
+    assert selected == ["a", "b", "a", "b", "a"]
+
+
+def test_scheduler_cursor_selects_returning_identity_after_temporary_absence() -> None:
+    first = _run_single_cohort_window(("a", "b"), SchedulerCursor())
+    second = _run_single_cohort_window(("a", "b"), first.next_cursor)
+    absent = _run_single_cohort_window(("a",), second.next_cursor)
+    returned = _run_single_cohort_window(("a", "b"), absent.next_cursor)
+
+    assert [result.selected[0].identity for result in (first, second, absent, returned)] == [
+        "a",
+        "b",
+        "a",
+        "b",
+    ]
+
+
+def test_scheduler_cursor_and_result_deeply_freeze_iterable_inputs() -> None:
+    source_anchors: list[str | None] = [None] * len(APPROVED_COHORTS)
+    source_anchors[0] = "m-a"
+    cursor = SchedulerCursor(1, source_anchors)
+    source_selected = [CohortCandidate("e-a", "ecommerce")]
+    result = SchedulerResult(source_selected, cursor)
+
+    source_anchors[0] = "changed"
+    source_selected.append(CohortCandidate("e-b", "ecommerce"))
+
+    assert cursor.candidate_anchors[0] == "m-a"
+    assert result.selected == (CohortCandidate("e-a", "ecommerce"),)
+    assert hash(cursor)
+    assert hash(result)
+
+
+@pytest.mark.parametrize(
+    "anchors",
+    (
+        [None] * (len(APPROVED_COHORTS) - 1),
+        [None] * (len(APPROVED_COHORTS) - 1) + [""],
+        [None] * (len(APPROVED_COHORTS) - 1) + [1],
+    ),
+)
+def test_scheduler_cursor_rejects_invalid_anchor_sequences(anchors: list[object]) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        SchedulerCursor(candidate_anchors=anchors)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("cohort_index", (True, -1, len(APPROVED_COHORTS), 1.5))
+def test_scheduler_cursor_rejects_invalid_cohort_index(cohort_index: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        SchedulerCursor(cohort_index=cohort_index)  # type: ignore[arg-type]
+
+
+def test_scheduler_result_rejects_non_candidates_and_invalid_cursor() -> None:
+    with pytest.raises(TypeError):
+        SchedulerResult(["not-a-candidate"], SchedulerCursor())  # type: ignore[list-item]
+    with pytest.raises(TypeError):
+        SchedulerResult([], object())  # type: ignore[arg-type]
+
+
+def test_discovery_facade_exports_exact_public_api() -> None:
+    assert discovery.__all__ == [
+        "APPROVED_COHORTS",
+        "CohortAssignment",
+        "CohortCandidate",
+        "CohortConfig",
+        "SchedulerCursor",
+        "SchedulerResult",
+        "allocate_cohort_budget",
+        "assign_cohort",
+        "load_cohort_config",
+        "schedule_candidates",
+        "schedule_candidates_detailed",
+    ]
+    assert discovery.SchedulerCursor is SchedulerCursor
+    assert discovery.SchedulerResult is SchedulerResult
+    assert discovery.schedule_candidates_detailed is schedule_candidates_detailed
 
 
 def test_all_cohort_yaml_contracts_are_strict_and_complete() -> None:

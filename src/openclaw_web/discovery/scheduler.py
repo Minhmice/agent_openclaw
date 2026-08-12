@@ -243,28 +243,49 @@ class SchedulerCursor:
     """Stable cross-window position in the canonical cohort/candidate universe."""
 
     cohort_index: int = 0
-    candidate_offsets: tuple[int, ...] = (0,) * len(APPROVED_COHORTS)
+    candidate_anchors: Sequence[str | None] = (None,) * len(APPROVED_COHORTS)
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.cohort_index, bool)
-            or not isinstance(self.cohort_index, int)
-            or not 0 <= self.cohort_index < len(APPROVED_COHORTS)
-        ):
+        if isinstance(self.cohort_index, bool) or not isinstance(self.cohort_index, int):
+            raise TypeError("cursor cohort_index must be an integer")
+        if not 0 <= self.cohort_index < len(APPROVED_COHORTS):
             raise ValueError("cursor cohort_index is invalid")
-        if len(self.candidate_offsets) != len(APPROVED_COHORTS) or any(
-            isinstance(offset, bool) or not isinstance(offset, int) or offset < 0
-            for offset in self.candidate_offsets
-        ):
-            raise ValueError("cursor candidate_offsets are invalid")
+        try:
+            anchors = tuple(self.candidate_anchors)
+        except TypeError as exc:
+            raise TypeError("cursor candidate_anchors must be iterable") from exc
+        if len(anchors) != len(APPROVED_COHORTS):
+            raise ValueError("cursor candidate_anchors length is invalid")
+        normalized: list[str | None] = []
+        for anchor in anchors:
+            if anchor is None:
+                normalized.append(None)
+            elif not isinstance(anchor, str):
+                raise TypeError("cursor candidate anchors must be strings or None")
+            elif not anchor.strip():
+                raise ValueError("cursor candidate anchors must not be blank")
+            else:
+                normalized.append(anchor.strip())
+        object.__setattr__(self, "candidate_anchors", tuple(normalized))
 
 
 @dataclass(frozen=True, slots=True)
 class SchedulerResult:
     """Selected candidates and the immutable cursor to persist for the next window."""
 
-    selected: tuple[CohortCandidate, ...]
+    selected: Sequence[CohortCandidate]
     next_cursor: SchedulerCursor
+
+    def __post_init__(self) -> None:
+        try:
+            selected = tuple(self.selected)
+        except TypeError as exc:
+            raise TypeError("selected candidates must be iterable") from exc
+        if not all(isinstance(candidate, CohortCandidate) for candidate in selected):
+            raise TypeError("selected candidates must contain only CohortCandidate values")
+        if not isinstance(self.next_cursor, SchedulerCursor):
+            raise TypeError("next_cursor must be SchedulerCursor")
+        object.__setattr__(self, "selected", selected)
 
 
 def _validate_budget(budget_by_cohort: Mapping[str, int]) -> dict[str, int]:
@@ -335,13 +356,28 @@ def _cursor_after_offset(
         index for index in eligible if index < cursor.cohort_index
     )
     rounds, remainder = divmod(rotation_offset, len(traversal))
-    offsets = list(cursor.candidate_offsets)
-    for index in traversal:
-        offsets[index] += rounds
-    for index in traversal[:remainder]:
-        offsets[index] += 1
+    anchors = list(cursor.candidate_anchors)
+    for traversal_index, index in enumerate(traversal):
+        advances = rounds + (1 if traversal_index < remainder else 0)
+        if advances:
+            bucket = buckets[APPROVED_COHORTS[index]]
+            candidate = _candidate_after_anchor(bucket, anchors[index])
+            candidate_index = bucket.index(candidate)
+            anchors[index] = bucket[(candidate_index + advances - 1) % len(bucket)].identity
     last_index = traversal[remainder - 1] if remainder else traversal[-1]
-    return SchedulerCursor((last_index + 1) % len(APPROVED_COHORTS), tuple(offsets))
+    return SchedulerCursor((last_index + 1) % len(APPROVED_COHORTS), anchors)
+
+
+def _candidate_after_anchor(
+    bucket: Sequence[CohortCandidate], anchor: str | None
+) -> CohortCandidate:
+    """Return the lexical successor of an identity anchor, wrapping if necessary."""
+
+    if anchor is not None:
+        for candidate in bucket:
+            if candidate.identity > anchor:
+                return candidate
+    return bucket[0]
 
 
 def schedule_candidates_detailed(
@@ -354,8 +390,8 @@ def schedule_candidates_detailed(
     """Select fairly and return stable state for a later, possibly different candidate set.
 
     The canonical cohort index advances only when a slot is selected. Each cohort's
-    candidate offset is retained while that cohort is absent. Persist ``next_cursor``
-    when candidate eligibility may change between windows.
+    last selected identity is retained while that cohort is absent. Selection resumes
+    at its lexical successor (or wraps), even when eligibility changes between windows.
     """
 
     budgets = _validate_budget(budget_by_cohort)
@@ -371,7 +407,7 @@ def schedule_candidates_detailed(
     selected: list[CohortCandidate] = []
     selected_identities: set[str] = set()
     used = dict.fromkeys(APPROVED_COHORTS, 0)
-    offsets = list(cursor.candidate_offsets)
+    anchors = list(cursor.candidate_anchors)
     cohort_index = cursor.cohort_index
     while len(selected) < limit:
         chosen_index: int | None = None
@@ -382,10 +418,12 @@ def schedule_candidates_detailed(
             bucket = buckets[cohort]
             if used[cohort] >= budgets.get(cohort, 0) or not bucket:
                 continue
+            candidate = _candidate_after_anchor(bucket, anchors[index])
+            start = bucket.index(candidate)
             for candidate_distance in range(len(bucket)):
-                candidate = bucket[(offsets[index] + candidate_distance) % len(bucket)]
+                candidate = bucket[(start + candidate_distance) % len(bucket)]
                 if candidate.identity not in selected_identities:
-                    offsets[index] += candidate_distance + 1
+                    anchors[index] = candidate.identity
                     chosen_index = index
                     chosen = candidate
                     break
@@ -397,7 +435,7 @@ def schedule_candidates_detailed(
         selected_identities.add(chosen.identity)
         used[APPROVED_COHORTS[chosen_index]] += 1
         cohort_index = (chosen_index + 1) % len(APPROVED_COHORTS)
-    return SchedulerResult(tuple(selected), SchedulerCursor(cohort_index, tuple(offsets)))
+    return SchedulerResult(selected, SchedulerCursor(cohort_index, anchors))
 
 
 def schedule_candidates(

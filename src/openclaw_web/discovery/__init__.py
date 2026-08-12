@@ -5,10 +5,13 @@ from openclaw_web.discovery.scheduler import (
     CohortAssignment,
     CohortCandidate,
     CohortConfig,
+    SchedulerCursor,
+    SchedulerResult,
     allocate_cohort_budget,
     assign_cohort,
     load_cohort_config,
     schedule_candidates,
+    schedule_candidates_detailed,
 )
 
 __all__ = [
@@ -16,8 +19,11 @@ __all__ = [
     "CohortAssignment",
     "CohortCandidate",
     "CohortConfig",
+    "SchedulerCursor",
+    "SchedulerResult",
     "allocate_cohort_budget",
     "assign_cohort",
     "load_cohort_config",
     "schedule_candidates",
+    "schedule_candidates_detailed",
 ]
