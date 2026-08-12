@@ -172,7 +172,6 @@ def test_ipv6_link_and_deprecated_site_local_boundaries(address: str, *, is_publ
 @pytest.mark.parametrize(
     "address",
     [
-        "64:ff9b::1",
         "2001:1::1",
         "2001:1::2",
         "2001:1::3",
@@ -184,6 +183,66 @@ def test_ipv6_link_and_deprecated_site_local_boundaries(address: str, *, is_publ
 )
 def test_iana_global_ipv6_special_purpose_exceptions_are_allowed(address: str) -> None:
     assert validate_resolved_ips([address]) == (ipaddress.ip_address(address),)
+
+
+@pytest.mark.parametrize(
+    ("address", "is_public"),
+    [
+        ("64:ff9a:ffff:ffff:ffff:ffff:ffff:ffff", False),
+        ("64:ff9b::", False),
+        ("64:ff9b::808:808", True),
+        ("64:ff9b::a00:1", False),
+        ("64:ff9b::6440:1", False),
+        ("64:ff9b::7f00:1", False),
+        ("64:ff9b::a9fe:a9fe", False),
+        ("64:ff9b::c000:201", False),
+        ("64:ff9b::c058:6301", False),
+        ("64:ff9b::e000:1", False),
+        ("64:ff9b::ffff:ffff", False),
+        ("64:ff9b:0:1::", False),
+    ],
+)
+def test_nat64_well_known_prefix_applies_embedded_ipv4_policy(
+    address: str, *, is_public: bool
+) -> None:
+    if is_public:
+        assert validate_resolved_ips([address]) == (ipaddress.ip_address(address),)
+    else:
+        with pytest.raises(UnsafeTarget, match="non-public"):
+            validate_resolved_ips([address])
+
+
+@pytest.mark.parametrize(
+    ("address", "is_public"),
+    [
+        ("192.88.98.255", True),
+        ("192.88.99.0", False),
+        ("192.88.99.255", False),
+        ("192.88.100.0", True),
+        ("3ffd:ffff:ffff:ffff:ffff:ffff:ffff:ffff", True),
+        ("3ffe::", False),
+        ("3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff", False),
+        ("3fff:1000::", True),
+    ],
+)
+def test_stable_deprecated_network_boundaries(address: str, *, is_public: bool) -> None:
+    if is_public:
+        assert validate_resolved_ips([address]) == (ipaddress.ip_address(address),)
+    else:
+        with pytest.raises(UnsafeTarget, match="non-public"):
+            validate_resolved_ips([address])
+
+
+def test_nat64_well_known_prefix_is_checked_in_literal_and_resolver_paths() -> None:
+    assert normalize_url("https://[64:ff9b::808:808]/") == "https://[64:ff9b::808:808]/"
+    with pytest.raises(UnsafeTarget, match="non-public literal"):
+        normalize_url("https://[64:ff9b::a9fe:a9fe]/latest/meta-data/")
+
+    assert resolve_and_validate("example.com", lambda _host: ["64:ff9b::808:808"]) == (
+        ipaddress.ip_address("64:ff9b::808:808"),
+    )
+    with pytest.raises(UnsafeTarget, match="non-public"):
+        resolve_and_validate("example.com", lambda _host: ["64:ff9b::7f00:1"])
 
 
 @pytest.mark.parametrize(
@@ -398,6 +457,100 @@ def test_redirect_canonical_url_and_authority_match_httpx_transport(
     if location != "?":
         assert validated_url == transport_url
     assert urlsplit(validated_url).netloc == urlsplit(transport_url).netloc
+
+
+@pytest.mark.parametrize(
+    ("location", "httpx_expected", "whatwg_expected", "validated_expected"),
+    [
+        (
+            "/search?",
+            "https://example.com/search",
+            "https://example.com/search?",
+            "https://example.com/search?",
+        ),
+        (
+            "relative?",
+            "https://example.com/base/relative",
+            "https://example.com/base/relative?",
+            "https://example.com/base/relative?",
+        ),
+        (
+            "/search?#frag",
+            "https://example.com/search#frag",
+            "https://example.com/search?#frag",
+            "https://example.com/search?",
+        ),
+        (
+            "?",
+            "https://example.com/base/page?old=1",
+            "https://example.com/base/page?",
+            "https://example.com/base/page?",
+        ),
+        (
+            "https://cdn.example.com/search?",
+            "https://cdn.example.com/search",
+            "https://cdn.example.com/search?",
+            "https://cdn.example.com/search?",
+        ),
+        (
+            "/search?q=term",
+            "https://example.com/search?q=term",
+            "https://example.com/search?q=term",
+            "https://example.com/search?q=term",
+        ),
+        (
+            "/search??",
+            "https://example.com/search??",
+            "https://example.com/search??",
+            "https://example.com/search??",
+        ),
+    ],
+)
+def test_redirect_empty_query_differential_preserves_canonical_transport_intent(
+    location: str,
+    httpx_expected: str,
+    whatwg_expected: str,
+    validated_expected: str,
+) -> None:
+    source = "https://example.com/base/page?old=1"
+
+    assert str(httpx.URL(source).join(location)) == httpx_expected
+    assert whatwg_expected.partition("#")[0] == validated_expected
+    assert (
+        validate_redirect(
+            source,
+            location,
+            lambda _host: ["93.184.216.34"],
+        )
+        == validated_expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("location", "expected_path_query"),
+    [
+        ("/search?", "/search?"),
+        ("relative?", "/base/relative?"),
+        ("/search?#frag", "/search?"),
+        ("?", "/base/page?"),
+        ("https://cdn.example.com/search?", "/search?"),
+        ("/search?q=term", "/search?q=term"),
+        ("/search??", "/search??"),
+    ],
+)
+def test_redirect_canonical_target_retains_robots_path_query_identity(
+    location: str, expected_path_query: str
+) -> None:
+    destination = validate_redirect(
+        "https://example.com/base/page?old=1",
+        location,
+        lambda _host: ["93.184.216.34"],
+    )
+    parsed = urlsplit(destination)
+    has_query = bool(parsed.query) or destination.endswith("?")
+    path_query = parsed.path + (f"?{parsed.query}" if has_query else "")
+
+    assert path_query == expected_path_query
 
 
 @pytest.mark.parametrize("location", ["//127.0.0.1/path", "//2130706433/path"])

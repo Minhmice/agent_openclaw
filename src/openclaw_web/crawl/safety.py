@@ -55,7 +55,6 @@ _ALLOW_NETWORKS = tuple(
     for network in (
         "192.0.0.9/32",
         "192.0.0.10/32",
-        "64:ff9b::/96",
         "2001:1::1/128",
         "2001:1::2/128",
         "2001:1::3/128",
@@ -76,7 +75,7 @@ _DENY_NETWORKS = tuple(
         "172.16.0.0/12",
         "192.0.0.0/24",
         "192.0.2.0/24",
-        "192.88.99.2/32",
+        "192.88.99.0/24",
         "192.168.0.0/16",
         "198.18.0.0/15",
         "198.51.100.0/24",
@@ -90,6 +89,7 @@ _DENY_NETWORKS = tuple(
         "100:0:0:1::/64",
         "2001::/23",
         "2001:db8::/32",
+        "3ffe::/16",
         "3fff::/20",
         "5f00::/16",
         "fc00::/7",
@@ -98,6 +98,7 @@ _DENY_NETWORKS = tuple(
         "ff00::/8",
     )
 )
+_NAT64_WELL_KNOWN_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 
 
 class UnsafeTarget(ValueError):
@@ -168,6 +169,9 @@ def _decode_dot_segment_escapes(path: str) -> str:
 def _is_public_address(address: IPAddress) -> bool:
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         return _is_public_address(address.ipv4_mapped)
+    if isinstance(address, ipaddress.IPv6Address) and address in _NAT64_WELL_KNOWN_PREFIX:
+        embedded_ipv4 = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+        return _is_public_address(embedded_ipv4)
     if any(
         address.version == network.version and address in network for network in _ALLOW_NETWORKS
     ):
@@ -358,6 +362,13 @@ def _validate_redirect_location(location: str) -> None:
             raise UnsafeTarget("redirect Location port is malformed") from error
 
 
+def _has_explicit_empty_query(reference: str) -> bool:
+    """Return whether a raw URL reference explicitly ends an empty query."""
+
+    before_fragment = reference.partition("#")[0]
+    return before_fragment.endswith("?") and not urlsplit(reference).query
+
+
 def validate_redirect(source_url: str, location: str, resolver: Resolver) -> str:
     """Resolve, normalize, and DNS-check one redirect hop.
 
@@ -372,14 +383,16 @@ def validate_redirect(source_url: str, location: str, resolver: Resolver) -> str
     if not isinstance(location, str) or not location:
         raise UnsafeTarget("redirect Location is missing")
     _validate_redirect_location(location)
-    if location == "?":
-        source_parts = urlsplit(source)
-        joined = (
-            urlunsplit((source_parts.scheme, source_parts.netloc, source_parts.path, "", "")) + "?"
+    explicit_empty_query = _has_explicit_empty_query(location)
+    joined = urljoin(source, location)
+    if explicit_empty_query:
+        joined_parts = urlsplit(joined)
+        joined = urlunsplit(
+            (joined_parts.scheme, joined_parts.netloc, joined_parts.path, "", joined_parts.fragment)
         )
-    else:
-        joined = urljoin(source, location)
     destination = normalize_url(joined)
+    if explicit_empty_query and not destination.endswith("?"):
+        destination = f"{destination}?"
     source_scheme = urlsplit(source).scheme
     destination_parts = urlsplit(destination)
     if source_scheme == "https" and destination_parts.scheme == "http":
