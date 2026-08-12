@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 
 import pytest
 
@@ -208,6 +208,24 @@ def test_builtin_observation_records_enforce_runtime_types() -> None:
         ResourceObservation("asset", "https://example.com/app.css", True)
     with pytest.raises((TypeError, ValueError)):
         PageAuditObservation(page=_page(), mobile_viewport=1)  # type: ignore[arg-type]
+
+
+def test_page_audit_observation_rejects_datetime_with_no_utc_offset() -> None:
+    class NoOffsetTimezone(tzinfo):
+        def utcoffset(self, value: datetime | None) -> None:
+            return None
+
+        def dst(self, value: datetime | None) -> None:
+            return None
+
+        def tzname(self, value: datetime | None) -> str:
+            return "no-offset"
+
+    with pytest.raises(ValueError, match="latest_content_date must be timezone-aware"):
+        PageAuditObservation(
+            page=_page(),
+            latest_content_date=datetime(2026, 8, 13, tzinfo=NoOffsetTimezone()),
+        )
 
 
 @pytest.mark.parametrize(

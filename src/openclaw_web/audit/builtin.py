@@ -113,6 +113,12 @@ class PageAuditObservation:
                 raise TypeError("latest_content_date must be a datetime or None")
             if self.latest_content_date.tzinfo is None:
                 raise ValueError("latest_content_date must be timezone-aware")
+            try:
+                utc_offset = self.latest_content_date.utcoffset()
+            except Exception as exc:
+                raise ValueError("latest_content_date must be timezone-aware") from exc
+            if utc_offset is None:
+                raise ValueError("latest_content_date must be timezone-aware")
         if self.browser is not None and not isinstance(self.browser, ScreenshotResult):
             raise TypeError("browser must be a ScreenshotResult or None")
 
