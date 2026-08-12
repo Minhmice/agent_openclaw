@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -186,7 +187,7 @@ def test_runner_returns_sanitized_structured_status_and_cleans_up(
         subprocess_runner=fake_run,
     ).run("https://example.com/")
 
-    assert result.status == ("unavailable" if mode == "missing" else "failed")
+    assert result.status == "unavailable"
     assert result.metrics is None
     assert result.reason in {
         "executable-unavailable",
@@ -195,6 +196,8 @@ def test_runner_returns_sanitized_structured_status_and_cleans_up(
         "invalid-report",
         "report-too-large",
     }
+    assert result.reason is not None and len(result.reason) <= 240
+    assert "secret" not in result.reason
     assert list(root.iterdir()) == []
 
 
@@ -219,8 +222,26 @@ def test_runner_rejects_symlink_output(tmp_path: Path) -> None:
         tmp_path / "reports", executable=executable, subprocess_runner=fake_run
     ).run("https://example.com/")
 
-    assert result.status == "failed"
+    assert result.status == "unavailable"
     assert result.reason == "unsafe-report"
+
+
+def test_runner_returns_unavailable_when_report_is_missing(tmp_path: Path) -> None:
+    executable = _executable(tmp_path)
+
+    def fake_run(
+        argv: list[str], *, timeout: float, cwd: Path
+    ) -> subprocess.CompletedProcess[bytes]:
+        del timeout, cwd
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    result = LighthouseRunner(
+        tmp_path / "reports", executable=executable, subprocess_runner=fake_run
+    ).run("https://example.com/")
+
+    assert result.status == "unavailable"
+    assert result.metrics is None
+    assert result.reason == "report-missing"
 
 
 def test_runner_rejects_symlink_output_root(tmp_path: Path) -> None:
@@ -234,7 +255,7 @@ def test_runner_rejects_symlink_output_root(tmp_path: Path) -> None:
 
     result = LighthouseRunner(root, executable=executable).run("https://example.com/")
 
-    assert result.status == "failed"
+    assert result.status == "unavailable"
     assert result.reason == "unsafe-output-root"
     assert list(outside.iterdir()) == []
 
@@ -246,7 +267,7 @@ def test_runner_contains_non_directory_output_root(tmp_path: Path) -> None:
 
     result = LighthouseRunner(root, executable=executable).run("https://example.com/")
 
-    assert result.status == "failed"
+    assert result.status == "unavailable"
     assert result.reason == "unsafe-output-root"
 
 
@@ -284,7 +305,7 @@ def test_runner_rejects_report_changed_during_descriptor_read(
         tmp_path / "reports", executable=executable, subprocess_runner=fake_run
     ).run("https://example.com/")
 
-    assert result.status == "failed"
+    assert result.status == "unavailable"
     assert result.reason == "unsafe-report"
 
 
@@ -301,7 +322,7 @@ def test_runner_contains_unexpected_adapter_failure(tmp_path: Path) -> None:
         tmp_path / "reports", executable=executable, subprocess_runner=fake_run
     ).run("https://example.com/")
 
-    assert result.status == "failed"
+    assert result.status == "unavailable"
     assert result.reason == "process-failed"
     assert list((tmp_path / "reports").iterdir()) == []
 
@@ -319,7 +340,7 @@ def test_runner_contains_malformed_adapter_result(tmp_path: Path) -> None:
         subprocess_runner=fake_run,  # type: ignore[arg-type]
     ).run("https://example.com/")
 
-    assert result.status == "failed"
+    assert result.status == "unavailable"
     assert result.reason == "process-failed"
     assert list((tmp_path / "reports").iterdir()) == []
 
@@ -348,3 +369,141 @@ def test_audit_service_is_partial_when_lighthouse_is_unavailable(tmp_path: Path)
     assert result.status == "partial"
     assert result.lighthouse.status == "unavailable"
     assert result.findings == result.builtin.findings
+
+
+def test_audit_service_passes_explicit_reference_time_to_stale_rule(tmp_path: Path) -> None:
+    lighthouse = LighthouseRunner(tmp_path / "reports", executable=tmp_path / "missing")
+    observation = PageAuditObservation(
+        page=_page(), latest_content_date=datetime(2020, 1, 1, tzinfo=UTC)
+    )
+
+    result = AuditService(lighthouse).audit(
+        observation, reference_time=datetime(2026, 8, 13, tzinfo=UTC)
+    )
+
+    assert "CONTENT-STALE" in {finding.rule_id for finding in result.findings}
+    assert "stale_reference_time" not in result.builtin.unavailable_inputs
+
+
+def test_audit_service_uses_injected_reference_time_provider(tmp_path: Path) -> None:
+    lighthouse = LighthouseRunner(tmp_path / "reports", executable=tmp_path / "missing")
+    observation = PageAuditObservation(
+        page=_page(), latest_content_date=datetime(2020, 1, 1, tzinfo=UTC)
+    )
+
+    result = AuditService(
+        lighthouse,
+        reference_time_provider=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+    ).audit(observation)
+
+    assert "CONTENT-STALE" in {finding.rule_id for finding in result.findings}
+    assert "stale_reference_time" not in result.builtin.unavailable_inputs
+
+
+def test_audit_service_rejects_naive_reference_time(tmp_path: Path) -> None:
+    lighthouse = LighthouseRunner(tmp_path / "reports", executable=tmp_path / "missing")
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        AuditService(lighthouse).audit(
+            PageAuditObservation(page=_page()),
+            reference_time=datetime(2026, 8, 13),  # noqa: DTZ001 - intentionally naive
+        )
+
+
+def test_posix_runner_resolves_npm_symlink_to_final_executable(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX executable symlink behavior")
+    final = _executable(tmp_path)
+    shim = tmp_path / "node_modules" / ".bin" / "lighthouse"
+    shim.parent.mkdir(parents=True)
+    shim.symlink_to(final)
+    observed: dict[str, object] = {}
+
+    def fake_run(
+        argv: list[str], *, timeout: float, cwd: Path
+    ) -> subprocess.CompletedProcess[bytes]:
+        del timeout, cwd
+        observed["argv"] = argv
+        output = Path(
+            next(item for item in argv if item.startswith("--output-path=")).split("=", 1)[1]
+        )
+        output.write_text(json.dumps(_document()), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    result = LighthouseRunner(
+        tmp_path / "reports", executable=shim, subprocess_runner=fake_run
+    ).run("https://example.com/")
+
+    assert result.status == "complete"
+    argv = observed["argv"]
+    assert isinstance(argv, list)
+    assert argv[0] == str(final)
+
+
+def test_posix_runner_resolves_symlink_chain_to_final_executable(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX executable symlink behavior")
+    final = _executable(tmp_path)
+    middle = tmp_path / "middle"
+    shim = tmp_path / "shim"
+    middle.symlink_to(final)
+    shim.symlink_to(middle)
+    observed: dict[str, object] = {}
+
+    def fake_run(
+        argv: list[str], *, timeout: float, cwd: Path
+    ) -> subprocess.CompletedProcess[bytes]:
+        del timeout, cwd
+        observed["executable"] = argv[0]
+        output = Path(
+            next(item for item in argv if item.startswith("--output-path=")).split("=", 1)[1]
+        )
+        output.write_text(json.dumps(_document()), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    result = LighthouseRunner(
+        tmp_path / "reports", executable=shim, subprocess_runner=fake_run
+    ).run("https://example.com/")
+
+    assert result.status == "complete"
+    assert observed["executable"] == str(final)
+
+
+def test_posix_runner_rejects_executable_symlink_cycle(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX executable symlink behavior")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.symlink_to(second)
+    second.symlink_to(first)
+
+    result = LighthouseRunner(tmp_path / "reports", executable=first).run("https://example.com/")
+
+    assert result.status == "unavailable"
+    assert result.reason == "executable-unavailable"
+
+
+def test_posix_runner_rejects_symlink_to_special_file(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX executable symlink behavior")
+    special = tmp_path / "special"
+    os.mkfifo(special, 0o700)
+    shim = tmp_path / "shim"
+    shim.symlink_to(special)
+
+    result = LighthouseRunner(tmp_path / "reports", executable=shim).run("https://example.com/")
+
+    assert result.status == "unavailable"
+    assert result.reason == "executable-unavailable"
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["file:///tmp/site", "https://user@example.com/", "https://example.com:bad/"],
+)
+def test_runner_returns_unavailable_for_invalid_url(tmp_path: Path, url: str) -> None:
+    result = LighthouseRunner(tmp_path / "reports", executable=_executable(tmp_path)).run(url)
+
+    assert result.status == "unavailable"
+    assert result.metrics is None
+    assert result.reason == "invalid-url"

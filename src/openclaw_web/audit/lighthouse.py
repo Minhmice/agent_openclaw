@@ -65,7 +65,7 @@ class LighthouseMetrics:
 
 @dataclass(frozen=True, slots=True)
 class LighthouseRunResult:
-    status: Literal["complete", "partial", "unavailable", "failed"]
+    status: Literal["complete", "partial", "unavailable"]
     metrics: LighthouseMetrics | None
     reason: str | None = None
 
@@ -304,32 +304,36 @@ class LighthouseRunner:
             candidate = Path(resolved)
         try:
             metadata = candidate.lstat()
-        except OSError:
+            if os.name == "nt" and stat.S_ISLNK(metadata.st_mode):
+                return None
+            final_path = candidate.resolve(strict=True)
+            final_metadata = final_path.lstat()
+        except (OSError, RuntimeError):
             return None
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        if stat.S_ISLNK(final_metadata.st_mode) or not stat.S_ISREG(final_metadata.st_mode):
             return None
-        if os.name != "nt" and not os.access(candidate, os.X_OK):
+        if os.name != "nt" and not os.access(final_path, os.X_OK):
             return None
-        return candidate.resolve()
+        return final_path
 
     def run(self, url: str) -> LighthouseRunResult:
         executable = self._executable()
         if executable is None:
             if not self._prepare_output_root():
-                return LighthouseRunResult("failed", None, "unsafe-output-root")
+                return LighthouseRunResult("unavailable", None, "unsafe-output-root")
             return LighthouseRunResult("unavailable", None, "executable-unavailable")
         parts = urlsplit(url)
         if parts.scheme not in {"http", "https"} or parts.hostname is None or parts.username:
-            return LighthouseRunResult("failed", None, "invalid-url")
+            return LighthouseRunResult("unavailable", None, "invalid-url")
         try:
             port = parts.port
         except ValueError:
-            return LighthouseRunResult("failed", None, "invalid-url")
+            return LighthouseRunResult("unavailable", None, "invalid-url")
         rendered_host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
         authority = rendered_host if port is None else f"{rendered_host}:{port}"
         safe_url = parts._replace(netloc=authority, query="", fragment="").geturl()
         if not self._prepare_output_root():
-            return LighthouseRunResult("failed", None, "unsafe-output-root")
+            return LighthouseRunResult("unavailable", None, "unsafe-output-root")
 
         work = Path(tempfile.mkdtemp(prefix="lighthouse-", dir=self._output_root))
         report = work / "report.json"
@@ -345,31 +349,31 @@ class LighthouseRunner:
             try:
                 completed = self._run(argv, timeout=self._limits.timeout_seconds, cwd=work)
             except subprocess.TimeoutExpired:
-                return LighthouseRunResult("failed", None, "process-timeout")
+                return LighthouseRunResult("unavailable", None, "process-timeout")
             except Exception as error:
                 if isinstance(error, (KeyboardInterrupt, SystemExit)):
                     raise
-                return LighthouseRunResult("failed", None, "process-failed")
+                return LighthouseRunResult("unavailable", None, "process-failed")
             returncode = getattr(completed, "returncode", None)
             if isinstance(returncode, bool) or not isinstance(returncode, int):
-                return LighthouseRunResult("failed", None, "process-failed")
+                return LighthouseRunResult("unavailable", None, "process-failed")
             if returncode != 0:
-                return LighthouseRunResult("failed", None, "process-failed")
+                return LighthouseRunResult("unavailable", None, "process-failed")
             try:
                 metadata = report.lstat()
             except OSError:
-                return LighthouseRunResult("failed", None, "report-missing")
+                return LighthouseRunResult("unavailable", None, "report-missing")
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-                return LighthouseRunResult("failed", None, "unsafe-report")
+                return LighthouseRunResult("unavailable", None, "unsafe-report")
             if metadata.st_size > self._limits.max_json_bytes:
-                return LighthouseRunResult("failed", None, "report-too-large")
+                return LighthouseRunResult("unavailable", None, "report-too-large")
             raw, read_failure = _read_report(report, metadata, self._limits.max_json_bytes)
             if read_failure is not None or raw is None:
-                return LighthouseRunResult("failed", None, read_failure or "invalid-report")
+                return LighthouseRunResult("unavailable", None, read_failure or "invalid-report")
             try:
                 metrics = parse_lighthouse(raw, limits=self._limits)
             except ValueError:
-                return LighthouseRunResult("failed", None, "invalid-report")
+                return LighthouseRunResult("unavailable", None, "invalid-report")
             return LighthouseRunResult(metrics.status, metrics)
         finally:
             shutil.rmtree(work, ignore_errors=True)

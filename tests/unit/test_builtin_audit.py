@@ -284,3 +284,22 @@ def test_stale_check_requires_explicit_deterministic_reference_time() -> None:
 
     assert "CONTENT-STALE" not in {finding.rule_id for finding in result.findings}
     assert "stale_reference_time" in result.unavailable_inputs
+
+
+def test_unresolved_resources_are_unavailable_by_kind_not_passing() -> None:
+    result = audit_page(
+        PageAuditObservation(
+            page=_page(),
+            resources=(
+                ResourceObservation("asset", "https://example.com/app.js"),
+                ResourceObservation("link", "https://example.com/about"),
+                ResourceObservation("link", "https://example.com/contact", status_code=200),
+            ),
+        )
+    )
+
+    assert result.status == "partial"
+    assert result.unavailable_inputs == tuple(sorted(result.unavailable_inputs))
+    assert "asset_status" in result.unavailable_inputs
+    assert "link_status" in result.unavailable_inputs
+    assert "resources" not in result.unavailable_inputs

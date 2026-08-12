@@ -244,6 +244,10 @@ def audit_page(
     if envelope.resources is None:
         unavailable.add("resources")
     else:
+        unresolved_kinds = {
+            item.kind for item in envelope.resources if item.status_code is None and not item.failed
+        }
+        unavailable.update(f"{kind}_status" for kind in unresolved_kinds)
         broken_links = tuple(
             item.url
             for item in envelope.resources
