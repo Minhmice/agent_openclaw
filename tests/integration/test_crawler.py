@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import math
 from collections.abc import Iterable
 
 import httpx
@@ -66,6 +68,201 @@ def client_for(
     return httpx.AsyncClient(
         transport=httpx.MockTransport(handler), follow_redirects=follow_redirects
     )
+
+
+@pytest.mark.asyncio
+async def test_injected_client_ambient_credentials_are_never_used_on_any_hop() -> None:
+    captured: dict[str, dict[str, str]] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured[str(request.url)] = dict(request.headers)
+        routes = {
+            "https://www.example.com/robots.txt": httpx.Response(404),
+            "https://www.example.com/": httpx.Response(
+                302, headers={"Location": "https://shop.example.com/final"}
+            ),
+            "https://shop.example.com/robots.txt": httpx.Response(404),
+            "https://shop.example.com/final": html("Final"),
+        }
+        response = routes[str(request.url)]
+        response.request = request
+        response.extensions["network_stream"] = PeerStream(PUBLIC_IP)
+        return response
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        headers={"Authorization": "Bearer ambient", "X-Ambient-Key": "secret"},
+        cookies={"session": "ambient"},
+        auth=httpx.BasicAuth("ambient-user", "ambient-password"),
+    )
+
+    result = await WebsiteCrawler(client=client, resolver=public_resolver).crawl(
+        "https://www.example.com/"
+    )
+
+    assert [page.url for page in result.pages] == ["https://shop.example.com/final"]
+    assert set(captured) == {
+        "https://www.example.com/robots.txt",
+        "https://www.example.com/",
+        "https://shop.example.com/robots.txt",
+        "https://shop.example.com/final",
+    }
+    # Crawler requests deliberately carry only its safe identity/content headers; HTTPX
+    # derives Host from each validated URL for correct routing and TLS SNI.
+    for headers in captured.values():
+        assert set(headers) == {"host", "accept", "user-agent"}
+        assert headers["accept"] == "text/html,application/xhtml+xml"
+        assert headers["user-agent"] == "OpenClawWebAudit/1.0"
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("request_timeout_seconds", 0),
+        ("request_timeout_seconds", -1),
+        ("request_timeout_seconds", math.nan),
+        ("request_timeout_seconds", math.inf),
+        ("request_timeout_seconds", True),
+        ("request_timeout_seconds", 301),
+        ("page_timeout_seconds", 0),
+        ("page_timeout_seconds", -1),
+        ("page_timeout_seconds", math.nan),
+        ("page_timeout_seconds", math.inf),
+        ("page_timeout_seconds", True),
+        ("page_timeout_seconds", 301),
+    ],
+)
+def test_crawl_timeout_limits_must_be_finite_positive_and_bounded(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match="timeout"):
+        CrawlLimits(**{field: value})
+
+
+def test_page_timeout_must_cover_at_least_one_request() -> None:
+    with pytest.raises(ValueError, match="page timeout"):
+        CrawlLimits(request_timeout_seconds=2, page_timeout_seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_request_timeout_overrides_injected_client_with_no_timeout() -> None:
+    requested: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        await asyncio.sleep(1)
+        return httpx.Response(404, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=None)
+    result = await asyncio.wait_for(
+        WebsiteCrawler(
+            client=client,
+            resolver=public_resolver,
+            limits=CrawlLimits(request_timeout_seconds=0.01, page_timeout_seconds=0.1),
+        ).crawl("https://example.com/"),
+        timeout=0.5,
+    )
+
+    assert requested == ["https://example.com/robots.txt"]
+    assert result.pages == ()
+    assert result.failures[0].reason == "robots policy unreachable"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_page_timeout_bounds_the_complete_redirect_operation() -> None:
+    requested: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        requested.append(url)
+        if url == "https://example.com/robots.txt":
+            response = httpx.Response(404)
+        else:
+            await asyncio.sleep(0.2)
+            if url == "https://example.com/":
+                response = httpx.Response(302, headers={"Location": "/final"})
+            else:
+                response = html("Final")
+        response.request = request
+        response.extensions["network_stream"] = PeerStream(PUBLIC_IP)
+        return response
+
+    async def no_wait(_delay: float) -> None:
+        return None
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=None)
+    result = await WebsiteCrawler(
+        client=client,
+        resolver=public_resolver,
+        limits=CrawlLimits(request_timeout_seconds=0.25, page_timeout_seconds=0.3),
+        sleeper=no_wait,
+    ).crawl("https://example.com/")
+
+    assert requested == [
+        "https://example.com/robots.txt",
+        "https://example.com/",
+        "https://example.com/final",
+    ]
+    assert result.pages == ()
+    assert result.failures[0].reason == "page fetch failed"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_exact_frontier_capacity_fully_processed_is_not_exhausted() -> None:
+    requested: list[str] = []
+    client = client_for(
+        {
+            "https://example.com/robots.txt": httpx.Response(404),
+            "https://example.com/": html('<a href="/contact">Contact</a>'),
+            "https://example.com/contact": html("Contact"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(
+        client=client,
+        resolver=public_resolver,
+        limits=CrawlLimits(max_pages=2, max_frontier_urls=2),
+    ).crawl("https://example.com/")
+
+    assert [page.url for page in result.pages] == [
+        "https://example.com/",
+        "https://example.com/contact",
+    ]
+    assert not result.budget_exhausted
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_refused_frontier_url_marks_budget_exhausted() -> None:
+    requested: list[str] = []
+    client = client_for(
+        {
+            "https://example.com/robots.txt": httpx.Response(404),
+            "https://example.com/": html(
+                '<a href="/contact">Contact</a><a href="/about">About</a>'
+            ),
+            "https://example.com/contact": html("Contact"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(
+        client=client,
+        resolver=public_resolver,
+        limits=CrawlLimits(max_pages=2, max_frontier_urls=2),
+    ).crawl("https://example.com/")
+
+    assert [page.url for page in result.pages] == [
+        "https://example.com/",
+        "https://example.com/contact",
+    ]
+    assert "https://example.com/about" not in requested
+    assert result.budget_exhausted
+    await client.aclose()
 
 
 @pytest.mark.asyncio
@@ -179,7 +376,9 @@ async def test_crawler_stops_at_page_budget_and_uses_deterministic_priority() ->
         },
         requested,
     )
-    crawler = WebsiteCrawler(client=client, resolver=public_resolver, limits=CrawlLimits(max_pages=3))
+    crawler = WebsiteCrawler(
+        client=client, resolver=public_resolver, limits=CrawlLimits(max_pages=3)
+    )
 
     result = await crawler.crawl("https://example.com/")
 
@@ -200,8 +399,7 @@ async def test_depth_body_and_content_type_limits_are_enforced_once_per_page() -
         {
             "https://example.com/robots.txt": httpx.Response(404),
             "https://example.com/": html(
-                '<a href="/large">Large</a><a href="/json">JSON</a>'
-                '<a href="/level-one">One</a>'
+                '<a href="/large">Large</a><a href="/json">JSON</a><a href="/level-one">One</a>'
             ),
             "https://example.com/large": html("x" * 200),
             "https://example.com/json": httpx.Response(
@@ -544,9 +742,7 @@ async def test_same_site_cross_origin_redirect_uses_destination_crawl_delay() ->
                 text="User-agent: *\nAllow: /\nCrawl-delay: 2\n",
                 headers={"Content-Type": "text/plain"},
             ),
-            "https://shop.example.com/first": httpx.Response(
-                302, headers={"Location": "/final"}
-            ),
+            "https://shop.example.com/first": httpx.Response(302, headers={"Location": "/final"}),
             "https://shop.example.com/final": html("Final"),
         },
         requested,
@@ -618,7 +814,9 @@ async def test_inner_failure_url_strips_query_and_fragment_without_losing_path()
 
 
 @pytest.mark.asyncio
-async def test_crawler_closes_only_owned_client_and_can_be_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_crawler_closes_only_owned_client_and_can_be_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     closed = False
 
     async def fake_close(_self: httpx.AsyncClient) -> None:
@@ -626,6 +824,22 @@ async def test_crawler_closes_only_owned_client_and_can_be_cancelled(monkeypatch
         closed = True
 
     monkeypatch.setattr(httpx.AsyncClient, "aclose", fake_close)
-    crawler = WebsiteCrawler(resolver=public_resolver, transport=httpx.MockTransport(lambda _: httpx.Response(404)))
+    crawler = WebsiteCrawler(
+        resolver=public_resolver, transport=httpx.MockTransport(lambda _: httpx.Response(404))
+    )
     await crawler.aclose()
     assert closed
+
+
+@pytest.mark.asyncio
+async def test_crawler_propagates_transport_cancellation() -> None:
+    async def cancelled(_request: httpx.Request) -> httpx.Response:
+        raise asyncio.CancelledError
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(cancelled))
+    crawler = WebsiteCrawler(client=client, resolver=public_resolver)
+
+    with pytest.raises(asyncio.CancelledError):
+        await crawler.crawl("https://example.com/")
+
+    await client.aclose()

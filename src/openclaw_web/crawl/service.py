@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import heapq
+import math
 import socket
 import time
 from collections.abc import Awaitable, Callable
@@ -34,6 +35,11 @@ _PRIORITY_TERMS: tuple[tuple[int, tuple[str, ...]], ...] = (
 )
 _USER_AGENT = "OpenClawWebAudit/1.0"
 _DEFAULT_REQUEST_INTERVAL = 1.0
+_MAX_TIMEOUT_SECONDS = 300.0
+_SAFE_REQUEST_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml",
+    "User-Agent": _USER_AGENT,
+}
 _Extractor: TypeAlias = tldextract.TLDExtract
 _PolicyLoader: TypeAlias = Callable[[str], Awaitable[RobotsPolicy]]
 
@@ -88,6 +94,8 @@ class CrawlLimits:
     max_redirects: int = 5
     max_frontier_urls: int = 1_000
     max_robots_bytes: int = DEFAULT_MAX_BYTES
+    request_timeout_seconds: float = 15.0
+    page_timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         values = (
@@ -97,10 +105,28 @@ class CrawlLimits:
             self.max_frontier_urls,
             self.max_robots_bytes,
         )
-        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values):
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values
+        ):
             raise ValueError("crawl limits must be positive integers")
-        if isinstance(self.max_depth, bool) or not isinstance(self.max_depth, int) or self.max_depth < 0:
+        if (
+            isinstance(self.max_depth, bool)
+            or not isinstance(self.max_depth, int)
+            or self.max_depth < 0
+        ):
             raise ValueError("max_depth must be a non-negative integer")
+        timeouts = (self.request_timeout_seconds, self.page_timeout_seconds)
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+            or value > _MAX_TIMEOUT_SECONDS
+            for value in timeouts
+        ):
+            raise ValueError("crawl timeouts must be finite positive numbers no greater than 300")
+        if self.page_timeout_seconds < self.request_timeout_seconds:
+            raise ValueError("page timeout must be at least the request timeout")
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +256,26 @@ class WebsiteCrawler:
         allowed_origin: str | None = None,
         policy_loader: _PolicyLoader | None = None,
     ) -> tuple[httpx.Response, bytes, str]:
+        async with asyncio.timeout(self._limits.page_timeout_seconds):
+            return await self._request_with_redirects(
+                url,
+                maximum=maximum,
+                delay=delay,
+                allowed_site=allowed_site,
+                allowed_origin=allowed_origin,
+                policy_loader=policy_loader,
+            )
+
+    async def _request_with_redirects(
+        self,
+        url: str,
+        *,
+        maximum: int,
+        delay: float | None,
+        allowed_site: str | None,
+        allowed_origin: str | None,
+        policy_loader: _PolicyLoader | None,
+    ) -> tuple[httpx.Response, bytes, str]:
         current = normalize_url(url)
         visited = {current}
         for redirect_count in range(self._limits.max_redirects + 1):
@@ -248,39 +294,51 @@ class WebsiteCrawler:
                 if not allowed:
                     raise ValueError("robots disallowed")
                 current_delay = policy.crawl_delay(_USER_AGENT)
-            await self._limiter.wait(
-                _registrable_domain(current, self._extractor), current_delay
-            )
-            async with self._client.stream(
+            await self._limiter.wait(_registrable_domain(current, self._extractor), current_delay)
+            request = httpx.Request(
                 "GET",
                 current,
-                headers={"Accept": "text/html,application/xhtml+xml", "User-Agent": _USER_AGENT},
-                follow_redirects=False,
-            ) as response:
-                self._validate_connected_peer(response, validated_addresses)
-                if response.status_code in _REDIRECT_STATUSES:
-                    if redirect_count >= self._limits.max_redirects:
-                        raise ValueError("redirect limit exceeded")
-                    try:
-                        destination = validate_redirect(
-                            current, response.headers.get("location", ""), self._resolver
-                        )
-                    except UnsafeTarget:
-                        raise ValueError("unsafe crawl target") from None
-                    if allowed_origin is not None and _origin(destination) != allowed_origin:
-                        raise ValueError("redirect leaves origin")
-                    if (
-                        allowed_site is not None
-                        and _registrable_domain(destination, self._extractor) != allowed_site
-                    ):
-                        raise ValueError("redirect leaves website")
-                    if destination in visited:
-                        raise ValueError("redirect loop")
-                    visited.add(destination)
-                    current = destination
-                    continue
-                body = await self._read_bounded(response, maximum)
-                return response, body, current
+                headers=_SAFE_REQUEST_HEADERS,
+                extensions={
+                    "timeout": httpx.Timeout(self._limits.request_timeout_seconds).as_dict()
+                },
+            )
+            response: httpx.Response | None = None
+            try:
+                async with asyncio.timeout(self._limits.request_timeout_seconds):
+                    response = await self._client.send(
+                        request,
+                        auth=None,
+                        follow_redirects=False,
+                        stream=True,
+                    )
+                    self._validate_connected_peer(response, validated_addresses)
+                    if response.status_code in _REDIRECT_STATUSES:
+                        if redirect_count >= self._limits.max_redirects:
+                            raise ValueError("redirect limit exceeded")
+                        try:
+                            destination = validate_redirect(
+                                current, response.headers.get("location", ""), self._resolver
+                            )
+                        except UnsafeTarget:
+                            raise ValueError("unsafe crawl target") from None
+                        if allowed_origin is not None and _origin(destination) != allowed_origin:
+                            raise ValueError("redirect leaves origin")
+                        if (
+                            allowed_site is not None
+                            and _registrable_domain(destination, self._extractor) != allowed_site
+                        ):
+                            raise ValueError("redirect leaves website")
+                        if destination in visited:
+                            raise ValueError("redirect loop")
+                        visited.add(destination)
+                        current = destination
+                        continue
+                    body = await self._read_bounded(response, maximum)
+                    return response, body, current
+            finally:
+                if response is not None:
+                    await response.aclose()
         raise ValueError("redirect limit exceeded")
 
     async def _robots_policy(self, origin: str) -> RobotsPolicy:
@@ -291,14 +349,16 @@ class WebsiteCrawler:
                 maximum=self._limits.max_robots_bytes,
                 allowed_origin=origin,
             )
-        except (httpx.HTTPError, ValueError, UnsafeTarget):
+        except (TimeoutError, httpx.HTTPError, ValueError, UnsafeTarget):
             return RobotsPolicy.unreachable("fetch failed", origin=origin)
         if _origin(final_url) != origin:
             return RobotsPolicy.unreachable("cross-origin redirect", origin=origin)
         if 200 <= response.status_code < 300:
             try:
                 text = body.decode(response.encoding or "utf-8", errors="replace")
-                return RobotsPolicy.parse(text, origin=origin, max_bytes=self._limits.max_robots_bytes)
+                return RobotsPolicy.parse(
+                    text, origin=origin, max_bytes=self._limits.max_robots_bytes
+                )
             except (ValueError, UnicodeError):
                 return RobotsPolicy.unreachable("invalid robots policy", origin=origin)
         if 400 <= response.status_code < 500:
@@ -353,6 +413,7 @@ class WebsiteCrawler:
         page_urls: set[str] = set()
         failures: list[CrawlFailure] = []
         attempts = 0
+        frontier_drop = False
 
         async def policy_for(origin: str) -> RobotsPolicy:
             policy = policies.get(origin)
@@ -387,7 +448,7 @@ class WebsiteCrawler:
                 )
             except asyncio.CancelledError:
                 raise
-            except (httpx.HTTPError, UnsafeTarget):
+            except (TimeoutError, httpx.HTTPError, UnsafeTarget):
                 failures.append(CrawlFailure(_failure_url(url), "page fetch failed"))
                 continue
             except ValueError as error:
@@ -420,16 +481,17 @@ class WebsiteCrawler:
             if depth >= self._limits.max_depth:
                 continue
             for link in page.links:
-                if len(queued) >= self._limits.max_frontier_urls:
-                    break
                 try:
                     canonical = normalize_url(link)
                 except UnsafeTarget:
                     continue
                 if _registrable_domain(canonical, self._extractor) != site or canonical in queued:
                     continue
+                if len(queued) >= self._limits.max_frontier_urls:
+                    frontier_drop = True
+                    break
                 queued.add(canonical)
                 heapq.heappush(frontier, (_priority(canonical), depth + 1, canonical))
 
-        exhausted = bool(frontier) or len(queued) >= self._limits.max_frontier_urls
+        exhausted = bool(frontier) or frontier_drop
         return CrawlResult(start, tuple(pages), tuple(failures), exhausted)
