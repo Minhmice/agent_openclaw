@@ -1054,6 +1054,63 @@ def test_discovery_seed_upsert_returns_duplicate_or_conflict_without_losing_evid
     }
 
 
+def test_exact_discovery_seed_retry_is_duplicate_without_duplicate_observation(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    seed = _seed("https://example.com", "Example", "Hà Nội").validated_replace(
+        source_url="https://directory.example/evidence/1",
+        source_type="serper",
+        external_id="result-1",
+        metadata={"provider": "serper", "rank": 1},
+    )
+
+    first = repo.upsert_discovery_seed(seed, "other")
+    retry = repo.upsert_discovery_seed(seed, "other")
+
+    assert first.disposition is DiscoverySeedDisposition.INSERTED
+    assert retry.disposition is DiscoverySeedDisposition.DUPLICATE
+    rows = db.execute(
+        "SELECT source_url, source_type, conflict, snapshot_json FROM candidate_sources"
+    ).fetchall()
+    assert len(rows) == 1
+    assert tuple(rows[0])[:3] == (
+        "https://directory.example/evidence/1",
+        "serper",
+        0,
+    )
+    assert json.loads(rows[0]["snapshot_json"])["candidate_seed"] == seed.model_dump(mode="json")
+
+
+def test_discovery_seed_evidence_set_preserves_distinct_sources_but_dedupes_retries(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    first = _seed("https://example.com", "Example", "Hà Nội").validated_replace(
+        source_url="https://directory.example/evidence/1", source_type="serper"
+    )
+    second = first.validated_replace(
+        source_url="https://maps.google.com/?cid=place-1",
+        source_type="google-places",
+        external_id="place-1",
+    )
+
+    for seed in (first, first, second, second):
+        repo.upsert_discovery_seed(seed, "other")
+
+    rows = db.execute(
+        "SELECT source_url, source_type FROM candidate_sources ORDER BY source_type"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("https://maps.google.com/?cid=place-1", "google-places"),
+        ("https://directory.example/evidence/1", "serper"),
+    ]
+
+
 def test_concurrent_discovery_seed_upsert_reports_exactly_one_insert(tmp_path: Path) -> None:
     path = tmp_path / "state.sqlite"
     db = connect(path)

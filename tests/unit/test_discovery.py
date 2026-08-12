@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 import openclaw_web.discovery.batch as batch_module
-from openclaw_web.db.repository import DiscoverySeedUpsertResult
+from openclaw_web.db.repository import (
+    DiscoverySeedDisposition,
+    DiscoverySeedUpsertResult,
+)
 from openclaw_web.discovery import (
     CsvDiscoverySource,
     DiscoveryConfigurationError,
@@ -280,13 +283,17 @@ class _Repository:
 
     def upsert_discovery_seed(self, seed: CandidateSeed, cohort: str) -> DiscoverySeedUpsertResult:
         self.urls.append(str(seed.url))
-        return DiscoverySeedUpsertResult("inserted", f"candidate:{seed.url}")
+        return DiscoverySeedUpsertResult(
+            DiscoverySeedDisposition.INSERTED, f"candidate:{seed.url}"
+        )
 
 
 class _DuplicateRepository(_Repository):
     def upsert_discovery_seed(self, seed: CandidateSeed, cohort: str) -> DiscoverySeedUpsertResult:
         self.urls.append(str(seed.url))
-        return DiscoverySeedUpsertResult("duplicate", f"candidate:{seed.url}")
+        return DiscoverySeedUpsertResult(
+            DiscoverySeedDisposition.DUPLICATE, f"candidate:{seed.url}"
+        )
 
 
 def _seed(url: str, *, latitude: float | None, longitude: float | None, hint: str) -> CandidateSeed:
