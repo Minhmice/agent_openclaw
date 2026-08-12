@@ -553,6 +553,94 @@ def test_redirect_canonical_target_retains_robots_path_query_identity(
     assert path_query == expected_path_query
 
 
+@pytest.mark.parametrize(
+    ("source", "httpx_base", "whatwg_base", "validated_expected"),
+    [
+        (
+            "https://example.com/page",
+            "https://example.com/page",
+            "https://example.com/page",
+            "https://example.com/page",
+        ),
+        (
+            "https://example.com/page?",
+            "https://example.com/page",
+            "https://example.com/page?",
+            "https://example.com/page?",
+        ),
+        (
+            "https://example.com/page?old=1",
+            "https://example.com/page?old=1",
+            "https://example.com/page?old=1",
+            "https://example.com/page?old=1",
+        ),
+    ],
+)
+@pytest.mark.parametrize("location", ["#", "#fragment", "#frag?x"])
+def test_fragment_only_redirect_inherits_source_query_identity_like_whatwg(
+    source: str,
+    httpx_base: str,
+    whatwg_base: str,
+    validated_expected: str,
+    location: str,
+) -> None:
+    httpx_fragment = "" if location == "#" else location
+
+    assert str(httpx.URL(source).join(location)) == f"{httpx_base}{httpx_fragment}"
+    assert f"{whatwg_base}{location}".partition("#")[0] == validated_expected
+    assert (
+        validate_redirect(source, location, lambda _host: ["93.184.216.34"]) == validated_expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_path_query"),
+    [
+        ("https://example.com/page", "/page"),
+        ("https://example.com/page?", "/page?"),
+        ("https://example.com/page?old=1", "/page?old=1"),
+    ],
+)
+@pytest.mark.parametrize("location", ["#", "#fragment", "#frag?x"])
+def test_fragment_only_redirect_retains_robots_source_query_identity(
+    source: str, expected_path_query: str, location: str
+) -> None:
+    destination = validate_redirect(
+        source,
+        location,
+        lambda _host: ["93.184.216.34"],
+    )
+    parsed = urlsplit(destination)
+    has_query = bool(parsed.query) or "?" in destination.partition("#")[0]
+    path_query = parsed.path + (f"?{parsed.query}" if has_query else "")
+
+    assert path_query == expected_path_query
+
+
+@pytest.mark.parametrize(
+    ("location", "validated_expected"),
+    [
+        ("relative", "https://example.com/relative"),
+        ("/absolute", "https://example.com/absolute"),
+        ("//cdn.example.com/asset", "https://cdn.example.com/asset"),
+        ("?next=1", "https://example.com/page?next=1"),
+        ("?", "https://example.com/page?"),
+        ("?#fragment", "https://example.com/page?"),
+    ],
+)
+def test_non_fragment_redirect_does_not_inherit_source_empty_query(
+    location: str, validated_expected: str
+) -> None:
+    assert (
+        validate_redirect(
+            "https://example.com/page?",
+            location,
+            lambda _host: ["93.184.216.34"],
+        )
+        == validated_expected
+    )
+
+
 @pytest.mark.parametrize("location", ["//127.0.0.1/path", "//2130706433/path"])
 def test_redirect_rejects_private_or_ambiguous_numeric_transport_authorities(
     location: str,

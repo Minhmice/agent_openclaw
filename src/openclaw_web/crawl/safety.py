@@ -369,6 +369,19 @@ def _has_explicit_empty_query(reference: str) -> bool:
     return before_fragment.endswith("?") and not urlsplit(reference).query
 
 
+def _is_fragment_only_reference(reference: str) -> bool:
+    """Return whether a raw URL reference contains only a fragment component."""
+
+    parsed = urlsplit(reference)
+    return (
+        reference.startswith("#")
+        and not parsed.scheme
+        and not parsed.netloc
+        and not parsed.path
+        and not parsed.query
+    )
+
+
 def validate_redirect(source_url: str, location: str, resolver: Resolver) -> str:
     """Resolve, normalize, and DNS-check one redirect hop.
 
@@ -384,6 +397,9 @@ def validate_redirect(source_url: str, location: str, resolver: Resolver) -> str
         raise UnsafeTarget("redirect Location is missing")
     _validate_redirect_location(location)
     explicit_empty_query = _has_explicit_empty_query(location)
+    inherit_empty_query = _has_explicit_empty_query(source) and _is_fragment_only_reference(
+        location
+    )
     joined = urljoin(source, location)
     if explicit_empty_query:
         joined_parts = urlsplit(joined)
@@ -391,7 +407,7 @@ def validate_redirect(source_url: str, location: str, resolver: Resolver) -> str
             (joined_parts.scheme, joined_parts.netloc, joined_parts.path, "", joined_parts.fragment)
         )
     destination = normalize_url(joined)
-    if explicit_empty_query and not destination.endswith("?"):
+    if (explicit_empty_query or inherit_empty_query) and not destination.endswith("?"):
         destination = f"{destination}?"
     source_scheme = urlsplit(source).scheme
     destination_parts = urlsplit(destination)
