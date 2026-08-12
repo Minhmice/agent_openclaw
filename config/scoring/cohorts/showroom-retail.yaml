@@ -1,0 +1,11 @@
+cohort_id: showroom-retail
+version: cohort-v1
+business_scoring_overrides:
+  product_discovery_weight: 1.20
+  store_visit_weight: 1.25
+money_scoring_overrides:
+  deal_value_modifier: 1.00
+  purchase_frequency_modifier: 1.05
+  sales_cycle_modifier: 1.10
+required_evidence_categories: [catalog, locations, opening-hours]
+conversion_intent_vocabulary: ["xem tại showroom", "chỉ đường", "visit showroom", "contact store"]

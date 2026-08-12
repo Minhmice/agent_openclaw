@@ -1,0 +1,11 @@
+cohort_id: healthcare
+version: cohort-v1
+business_scoring_overrides:
+  clinical_trust_weight: 1.30
+  care_access_weight: 1.25
+money_scoring_overrides:
+  deal_value_modifier: 1.05
+  purchase_frequency_modifier: 1.10
+  sales_cycle_modifier: 1.15
+required_evidence_categories: [clinicians, services, licensing]
+conversion_intent_vocabulary: ["đặt lịch khám", "gọi bác sĩ", "book appointment", "contact clinic"]

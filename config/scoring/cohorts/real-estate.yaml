@@ -1,0 +1,11 @@
+cohort_id: real-estate
+version: cohort-v1
+business_scoring_overrides:
+  listing_quality_weight: 1.20
+  agent_trust_weight: 1.25
+money_scoring_overrides:
+  deal_value_modifier: 1.35
+  purchase_frequency_modifier: 0.70
+  sales_cycle_modifier: 0.75
+required_evidence_categories: [listings, agent-identity, legal-status]
+conversion_intent_vocabulary: ["đăng ký xem nhà", "nhận báo giá", "book a viewing", "contact agent"]

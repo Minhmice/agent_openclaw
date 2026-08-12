@@ -1,0 +1,11 @@
+cohort_id: education
+version: cohort-v1
+business_scoring_overrides:
+  program_clarity_weight: 1.25
+  outcome_evidence_weight: 1.20
+money_scoring_overrides:
+  deal_value_modifier: 1.05
+  purchase_frequency_modifier: 0.85
+  sales_cycle_modifier: 0.95
+required_evidence_categories: [programs, faculty, outcomes]
+conversion_intent_vocabulary: ["đăng ký tư vấn", "nhận học phí", "book admission call", "contact admissions"]

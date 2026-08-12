@@ -1,0 +1,11 @@
+cohort_id: hospitality
+version: cohort-v1
+business_scoring_overrides:
+  experience_weight: 1.20
+  availability_weight: 1.25
+money_scoring_overrides:
+  deal_value_modifier: 1.00
+  purchase_frequency_modifier: 1.10
+  sales_cycle_modifier: 1.25
+required_evidence_categories: [rooms-or-menu, amenities, availability]
+conversion_intent_vocabulary: ["đặt phòng", "đặt bàn", "book now", "contact reservations"]

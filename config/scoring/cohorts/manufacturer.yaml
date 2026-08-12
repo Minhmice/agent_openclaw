@@ -1,0 +1,11 @@
+cohort_id: manufacturer
+version: cohort-v1
+business_scoring_overrides:
+  operational_scale_weight: 1.25
+  technical_credibility_weight: 1.20
+money_scoring_overrides:
+  deal_value_modifier: 1.30
+  purchase_frequency_modifier: 0.85
+  sales_cycle_modifier: 0.80
+required_evidence_categories: [products, facilities, certifications]
+conversion_intent_vocabulary: ["yêu cầu báo giá", "năng lực sản xuất", "request a quote", "factory capacity"]

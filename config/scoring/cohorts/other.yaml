@@ -1,0 +1,11 @@
+cohort_id: other
+version: cohort-v1
+business_scoring_overrides:
+  proposition_clarity_weight: 1.10
+  trust_weight: 1.10
+money_scoring_overrides:
+  deal_value_modifier: 1.00
+  purchase_frequency_modifier: 1.00
+  sales_cycle_modifier: 1.00
+required_evidence_categories: [offer, organization, contact-method]
+conversion_intent_vocabulary: ["liên hệ", "nhận thông tin", "contact us", "request details"]

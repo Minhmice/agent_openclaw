@@ -1,0 +1,11 @@
+cohort_id: local-service
+version: cohort-v1
+business_scoring_overrides:
+  local_trust_weight: 1.25
+  response_speed_weight: 1.20
+money_scoring_overrides:
+  deal_value_modifier: 0.85
+  purchase_frequency_modifier: 1.20
+  sales_cycle_modifier: 1.25
+required_evidence_categories: [service-area, reviews, availability]
+conversion_intent_vocabulary: ["gọi ngay", "đặt lịch", "book service", "contact now"]
