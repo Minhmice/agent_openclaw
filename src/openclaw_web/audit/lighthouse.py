@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import stat
 import subprocess
@@ -26,12 +27,25 @@ class LighthouseLimits:
     max_json_nodes: int = 100_000
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, int | float)
+            or not math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds <= 0
+        ):
             raise ValueError("timeout_seconds must be positive and finite")
+        if self.timeout_seconds > 600:
+            raise ValueError("timeout_seconds exceeds the supported maximum")
         for name in ("max_json_bytes", "max_json_depth", "max_json_nodes"):
             value = getattr(self, name)
-            if isinstance(value, bool) or value <= 0:
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.max_json_bytes > 50_000_000:
+            raise ValueError("max_json_bytes exceeds the supported maximum")
+        if self.max_json_depth > 64:
+            raise ValueError("max_json_depth exceeds the supported maximum")
+        if self.max_json_nodes > 1_000_000:
+            raise ValueError("max_json_nodes exceeds the supported maximum")
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,9 +108,9 @@ def _load(value: JsonInput, limits: LighthouseLimits) -> Mapping[str, object]:
         document: object = value
         try:
             encoded_size = len(
-                json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
-                    "utf-8"
-                )
+                json.dumps(
+                    value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+                ).encode("utf-8")
             )
         except (TypeError, ValueError, RecursionError) as error:
             raise ValueError("invalid in-memory report") from error
@@ -210,6 +224,49 @@ def _default_run(
     )
 
 
+def _read_report(
+    path: Path,
+    expected: os.stat_result,
+    maximum: int,
+) -> tuple[bytes | None, Literal["unsafe-report", "report-too-large", "invalid-report"] | None]:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None, "unsafe-report"
+    try:
+        actual = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(actual.st_mode)
+            or actual.st_dev != expected.st_dev
+            or actual.st_ino != expected.st_ino
+            or actual.st_size != expected.st_size
+        ):
+            return None, "unsafe-report"
+        chunks: list[bytes] = []
+        total = 0
+        while total <= maximum:
+            chunk = os.read(descriptor, min(65_536, maximum + 1 - total))
+            if not chunk:
+                final = os.fstat(descriptor)
+                if (
+                    final.st_dev != actual.st_dev
+                    or final.st_ino != actual.st_ino
+                    or final.st_size != actual.st_size
+                    or final.st_mtime_ns != actual.st_mtime_ns
+                    or final.st_ctime_ns != actual.st_ctime_ns
+                ):
+                    return None, "unsafe-report"
+                return b"".join(chunks), None
+            chunks.append(chunk)
+            total += len(chunk)
+        return None, "report-too-large"
+    except OSError:
+        return None, "invalid-report"
+    finally:
+        os.close(descriptor)
+
+
 class LighthouseRunner:
     """Run a resolved Lighthouse executable into an isolated bounded report file."""
 
@@ -221,10 +278,18 @@ class LighthouseRunner:
         limits: LighthouseLimits | None = None,
         subprocess_runner: SubprocessRunner = _default_run,
     ) -> None:
-        self._output_root = output_root.resolve()
+        self._output_root = Path(os.path.abspath(output_root))
         self._requested_executable = executable
         self._limits = limits or LighthouseLimits()
         self._run = subprocess_runner
+
+    def _prepare_output_root(self) -> bool:
+        try:
+            self._output_root.mkdir(parents=True, exist_ok=True)
+            metadata = self._output_root.lstat()
+        except OSError:
+            return False
+        return stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
 
     def _executable(self) -> Path | None:
         requested = self._requested_executable
@@ -243,12 +308,15 @@ class LighthouseRunner:
             return None
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             return None
+        if os.name != "nt" and not os.access(candidate, os.X_OK):
+            return None
         return candidate.resolve()
 
     def run(self, url: str) -> LighthouseRunResult:
         executable = self._executable()
         if executable is None:
-            self._output_root.mkdir(parents=True, exist_ok=True)
+            if not self._prepare_output_root():
+                return LighthouseRunResult("failed", None, "unsafe-output-root")
             return LighthouseRunResult("unavailable", None, "executable-unavailable")
         parts = urlsplit(url)
         if parts.scheme not in {"http", "https"} or parts.hostname is None or parts.username:
@@ -260,8 +328,7 @@ class LighthouseRunner:
         rendered_host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
         authority = rendered_host if port is None else f"{rendered_host}:{port}"
         safe_url = parts._replace(netloc=authority, query="", fragment="").geturl()
-        self._output_root.mkdir(parents=True, exist_ok=True)
-        if self._output_root.is_symlink() or not self._output_root.is_dir():
+        if not self._prepare_output_root():
             return LighthouseRunResult("failed", None, "unsafe-output-root")
 
         work = Path(tempfile.mkdtemp(prefix="lighthouse-", dir=self._output_root))
@@ -272,7 +339,7 @@ class LighthouseRunner:
             "--quiet",
             "--output=json",
             f"--output-path={report}",
-            "--chrome-flags=--headless --no-sandbox --disable-gpu",
+            "--chrome-flags=--headless --disable-gpu",
         ]
         try:
             try:
@@ -283,7 +350,10 @@ class LighthouseRunner:
                 if isinstance(error, (KeyboardInterrupt, SystemExit)):
                     raise
                 return LighthouseRunResult("failed", None, "process-failed")
-            if completed.returncode != 0:
+            returncode = getattr(completed, "returncode", None)
+            if isinstance(returncode, bool) or not isinstance(returncode, int):
+                return LighthouseRunResult("failed", None, "process-failed")
+            if returncode != 0:
                 return LighthouseRunResult("failed", None, "process-failed")
             try:
                 metadata = report.lstat()
@@ -293,10 +363,12 @@ class LighthouseRunner:
                 return LighthouseRunResult("failed", None, "unsafe-report")
             if metadata.st_size > self._limits.max_json_bytes:
                 return LighthouseRunResult("failed", None, "report-too-large")
+            raw, read_failure = _read_report(report, metadata, self._limits.max_json_bytes)
+            if read_failure is not None or raw is None:
+                return LighthouseRunResult("failed", None, read_failure or "invalid-report")
             try:
-                raw = report.read_bytes()
                 metrics = parse_lighthouse(raw, limits=self._limits)
-            except (OSError, ValueError):
+            except ValueError:
                 return LighthouseRunResult("failed", None, "invalid-report")
             return LighthouseRunResult(metrics.status, metrics)
         finally:

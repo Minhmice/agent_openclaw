@@ -16,7 +16,12 @@ from openclaw_web.crawl.extract import (
     FormSummary,
     Heading,
 )
-from openclaw_web.screenshots import BrowserObservation, FailedRequest, ScreenshotResult
+from openclaw_web.screenshots import (
+    BrowserObservation,
+    CallToActionObservation,
+    FailedRequest,
+    ScreenshotResult,
+)
 
 
 def _page(**changes: object) -> ExtractedPage:
@@ -54,6 +59,35 @@ def _browser_result() -> ScreenshotResult:
         failed_requests=(
             FailedRequest("GET", "https://user:pass@example.com/app.js?key=secret", "failed"),
         ),
+        failures=(),
+    )
+
+
+def _browser_with_dynamic_cta() -> ScreenshotResult:
+    return ScreenshotResult(
+        source_url="https://example.com/",
+        status="complete",
+        attempts=1,
+        screenshots=(),
+        observations=(
+            BrowserObservation(
+                viewport="mobile",
+                horizontal_overflow=False,
+                document_width=390,
+                document_height=900,
+                ctas=(
+                    CallToActionObservation(
+                        text="Contact us",
+                        tag="button",
+                        href=None,
+                        visible=True,
+                    ),
+                ),
+                obstructions=(),
+            ),
+        ),
+        console_errors=(),
+        failed_requests=(),
         failures=(),
     )
 
@@ -156,10 +190,97 @@ def test_builtin_findings_are_frozen_bounded_sanitized_and_deterministic() -> No
     assert all(len(item) <= 240 for item in finding.evidence)
     assert all("secret" not in item and "pass" not in item for item in finding.evidence)
     with pytest.raises((AttributeError, TypeError)):
-        finding.evidence += ("changed",)
+        finding.evidence += ("changed",)  # type: ignore[misc]
 
 
 def test_builtin_observations_reject_invalid_counts() -> None:
-    with pytest.raises(ValueError):
-        PageAuditObservation(page=_page(), redirect_count=-1)
+    for invalid in (-1, True, 1.5):
+        with pytest.raises((TypeError, ValueError)):
+            PageAuditObservation(page=_page(), redirect_count=invalid)  # type: ignore[arg-type]
 
+
+def test_builtin_observation_records_enforce_runtime_types() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        ImageObservation("https://example.com/image.jpg", None, failed=1)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError)):
+        ResourceObservation("style", "https://example.com/app.css", 200)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError)):
+        ResourceObservation("asset", "https://example.com/app.css", True)
+    with pytest.raises((TypeError, ValueError)):
+        PageAuditObservation(page=_page(), mobile_viewport=1)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"requested_url": 1},
+        {"images": []},
+        {"images": (object(),)},
+        {"resources": []},
+        {"resources": (object(),)},
+        {"latest_content_date": "2026-08-13"},
+        {"browser": object()},
+    ],
+)
+def test_page_audit_observation_rejects_malformed_optional_inputs(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises(TypeError):
+        PageAuditObservation(page=_page(), **changes)  # type: ignore[arg-type]
+
+
+def test_http_hyperlink_is_not_mixed_executable_content() -> None:
+    result = audit_page(
+        PageAuditObservation(
+            page=_page(),
+            resources=(ResourceObservation("link", "http://external.example/info", 200),),
+        )
+    )
+
+    assert "MIXED-CONTENT" not in {finding.rule_id for finding in result.findings}
+
+
+def test_external_broken_hyperlink_is_not_claimed_as_broken_internal_link() -> None:
+    result = audit_page(
+        PageAuditObservation(
+            page=_page(),
+            resources=(ResourceObservation("link", "https://external.example/missing", 404),),
+        )
+    )
+
+    assert "LINK-BROKEN" not in {finding.rule_id for finding in result.findings}
+
+
+def test_browser_observed_dynamic_cta_prevents_missing_cta_claim() -> None:
+    result = audit_page(
+        PageAuditObservation(page=_page(ctas=()), browser=_browser_with_dynamic_cta())
+    )
+
+    assert "CTA-MISSING" not in {finding.rule_id for finding in result.findings}
+
+
+def test_partial_browser_capture_is_not_treated_as_complete_observation() -> None:
+    browser = _browser_with_dynamic_cta()
+    partial = ScreenshotResult(
+        source_url=browser.source_url,
+        status="partial",
+        attempts=browser.attempts,
+        screenshots=browser.screenshots,
+        observations=browser.observations,
+        console_errors=browser.console_errors,
+        failed_requests=browser.failed_requests,
+        failures=browser.failures,
+    )
+
+    result = audit_page(PageAuditObservation(page=_page(), browser=partial))
+
+    assert "browser" in result.unavailable_inputs
+
+
+def test_stale_check_requires_explicit_deterministic_reference_time() -> None:
+    result = audit_page(
+        PageAuditObservation(page=_page(), latest_content_date=datetime(2020, 1, 1, tzinfo=UTC))
+    )
+
+    assert "CONTENT-STALE" not in {finding.rule_id for finding in result.findings}
+    assert "stale_reference_time" in result.unavailable_inputs
