@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 
 from openclaw_web.discovery import (
     CsvDiscoverySource,
+    DiscoveryConfigurationError,
     DiscoveryPayloadError,
     DiscoveryService,
     JsonDiscoverySource,
@@ -45,6 +47,34 @@ def test_manual_source_defaults_evidence_url_and_injected_utc_clock() -> None:
     assert seed.source_type == "manual"
     assert seed.source_url == seed.url
     assert seed.discovered_at == NOW
+
+
+def test_manual_source_rejects_overflow_after_bounded_generator_consumption() -> None:
+    consumed = 0
+
+    def records() -> Iterator[dict[str, str]]:
+        nonlocal consumed
+        for index in range(10_000):
+            consumed += 1
+            yield {"url": f"https://{index}.example", "business_name": str(index)}
+
+    source = ManualUrlDiscoverySource(records(), max_items=2, clock=_clock)
+
+    with pytest.raises(DiscoveryPayloadError, match="too many manual records"):
+        source.discover()
+
+    assert consumed == 3
+
+
+@pytest.mark.parametrize("max_items", [True, 0, -1, 201])
+def test_manual_source_max_items_is_a_strict_bounded_positive_integer(max_items: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        ManualUrlDiscoverySource([], max_items=max_items)  # type: ignore[arg-type]
+
+
+def test_manual_source_rejects_string_like_iterables() -> None:
+    with pytest.raises(TypeError, match="non-string iterable"):
+        ManualUrlDiscoverySource("https://example.com")  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -111,6 +141,27 @@ def test_json_rejects_duplicate_keys_at_any_depth_and_non_list_root(tmp_path: Pa
         JsonDiscoverySource(duplicate, clock=_clock).discover()
     with pytest.raises(DiscoveryPayloadError, match="root.json"):
         JsonDiscoverySource(root, clock=_clock).discover()
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("location", ["coordinate", "metadata"])
+def test_json_rejects_nonstandard_constants_at_every_level(
+    tmp_path: Path, constant: str, location: str
+) -> None:
+    path = tmp_path / "constant.json"
+    field = (
+        f'"latitude":{constant},"longitude":1'
+        if location == "coordinate"
+        else f'"metadata":{{"nested":[{constant}]}}'
+    )
+    path.write_text(f'[{{"url":"https://x.test","business_name":"X",{field}}}]', encoding="utf-8")
+
+    with pytest.raises(
+        DiscoveryPayloadError, match="invalid discovery file: constant.json"
+    ) as raised:
+        JsonDiscoverySource(path, clock=_clock).discover()
+
+    assert constant not in str(raised.value)
 
 
 class _Repository:
@@ -184,6 +235,7 @@ def test_service_cap_and_readiness_matrix() -> None:
     assert len(service.normalize_unique(seeds)) == 1
     status = service.readiness()
     assert status.manual_sources == "ready"
+    assert status.geofence == "not_ready"
     assert status.automatic_discovery == "not_ready"
     assert status.providers == ()
 
@@ -194,10 +246,26 @@ def test_service_upserts_duplicate_evidence_and_marks_outcome() -> None:
         "https://duplicate.example.com", latitude=None, longitude=None, hint="manufacturer"
     )
 
-    result = DiscoveryService(repository=repository).process([seed])
+    result = DiscoveryService(
+        geofence=GeofenceService(21.0278, 105.8342, 80.0, fallback_dataset=None),
+        repository=repository,
+    ).process([seed.validated_replace(latitude=21.03, longitude=105.83)])
 
     assert repository.urls == ["https://duplicate.example.com/"]
     assert result.outcomes[0].status == "duplicate"
+    assert result.candidates == ()
+
+
+def test_service_requires_geofence_before_repository_mutation() -> None:
+    repository = _Repository()
+    service = DiscoveryService(repository=repository)
+
+    with pytest.raises(DiscoveryConfigurationError, match="geofence is not configured"):
+        service.process(
+            [_seed("https://inside.example.com", latitude=21.03, longitude=105.83, hint="other")]
+        )
+
+    assert repository.urls == []
 
 
 def test_readiness_reports_configured_provider_without_credentials() -> None:
@@ -210,5 +278,6 @@ def test_readiness_reports_configured_provider_without_credentials() -> None:
     status = DiscoveryService(providers=[Provider()]).readiness()
 
     assert status.automatic_discovery == "ready"
+    assert status.geofence == "not_ready"
     assert status.providers == (("serper", "ready"),)
     assert "key" not in repr(status).lower()

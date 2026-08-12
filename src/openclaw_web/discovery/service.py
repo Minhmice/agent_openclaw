@@ -10,7 +10,11 @@ import tldextract
 from pydantic import AnyHttpUrl, ValidationError
 
 from openclaw_web.crawl.safety import UnsafeTarget, normalize_url
-from openclaw_web.discovery.base import AutomaticDiscoveryProvider, DiscoveryPayloadError
+from openclaw_web.discovery.base import (
+    AutomaticDiscoveryProvider,
+    DiscoveryConfigurationError,
+    DiscoveryPayloadError,
+)
 from openclaw_web.discovery.scheduler import assign_cohort
 from openclaw_web.geofence import GeofenceResult, GeofenceService, LocationEvidence
 from openclaw_web.models import Candidate, CandidateSeed
@@ -49,6 +53,7 @@ class DiscoveryProcessResult:
 class DiscoveryReadiness:
     manual_sources: str
     automatic_discovery: str
+    geofence: str
     providers: tuple[tuple[str, str], ...]
 
 
@@ -108,6 +113,8 @@ class DiscoveryService:
 
     def process(self, seeds: Iterable[CandidateSeed]) -> DiscoveryProcessResult:
         normalized = self.normalize_unique(seeds)
+        if normalized and self._geofence is None:
+            raise DiscoveryConfigurationError("geofence is not configured")
         outcomes: list[DiscoveryOutcome] = []
         candidates: list[object] = []
         for seed in normalized:
@@ -144,7 +151,8 @@ class DiscoveryService:
                 )
                 if duplicate is not None:
                     status = "duplicate"
-            candidates.append(candidate)
+            if status == "accepted":
+                candidates.append(candidate)
             outcomes.append(
                 DiscoveryOutcome(
                     seed,
@@ -163,5 +171,6 @@ class DiscoveryService:
         return DiscoveryReadiness(
             manual_sources="ready",
             automatic_discovery="ready" if ready else "not_ready",
+            geofence="ready" if self._geofence is not None else "not_ready",
             providers=providers,
         )

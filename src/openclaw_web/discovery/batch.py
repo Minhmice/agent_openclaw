@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ _OPTIONAL = frozenset(
 _COLUMNS = _REQUIRED | _OPTIONAL
 _DEFAULT_MAX_BYTES = 2_000_000
 _DEFAULT_MAX_ITEMS = 2_000
+_DEFAULT_MANUAL_MAX_ITEMS = 200
 _DEFAULT_FIELD_SIZE = 64_000
 
 
@@ -44,7 +45,10 @@ def _strict_json(text: str) -> Any:
             result[key] = value
         return result
 
-    return json.loads(text, object_pairs_hook=unique)
+    def reject_constant(_value: str) -> None:
+        raise ValueError("nonstandard JSON constant")
+
+    return json.loads(text, object_pairs_hook=unique, parse_constant=reject_constant)
 
 
 def _parse_timestamp(value: object) -> datetime:
@@ -126,13 +130,33 @@ def _record_seed(
 
 
 class ManualUrlDiscoverySource:
-    def __init__(self, records: Sequence[Mapping[str, object]], *, clock: Clock = utc_now) -> None:
+    def __init__(
+        self,
+        records: Iterable[Mapping[str, object]],
+        *,
+        clock: Clock = utc_now,
+        max_items: int = _DEFAULT_MANUAL_MAX_ITEMS,
+    ) -> None:
         if isinstance(records, str | bytes | bytearray):
-            raise TypeError("manual records must be a non-string sequence")
-        self._records = tuple(records)
+            raise TypeError("manual records must be a non-string iterable")
+        if isinstance(max_items, bool) or not isinstance(max_items, int):
+            raise TypeError("max_items must be an integer")
+        if max_items <= 0 or max_items > _DEFAULT_MANUAL_MAX_ITEMS:
+            raise ValueError(f"max_items must be between 1 and {_DEFAULT_MANUAL_MAX_ITEMS}")
+        self._records = records
         self._clock = clock
+        self._max_items = max_items
 
     def discover(self) -> tuple[CandidateSeed, ...]:
+        iterator = iter(self._records)
+        bounded: list[Mapping[str, object]] = []
+        for _ in range(self._max_items + 1):
+            try:
+                bounded.append(next(iterator))
+            except StopIteration:
+                break
+        if len(bounded) > self._max_items:
+            raise DiscoveryPayloadError("too many manual records")
         return tuple(
             _record_seed(
                 record,
@@ -140,7 +164,7 @@ class ManualUrlDiscoverySource:
                 clock=self._clock,
                 error_label="invalid manual record",
             )
-            for record in self._records
+            for record in bounded
         )
 
 

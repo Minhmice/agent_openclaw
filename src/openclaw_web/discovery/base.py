@@ -52,10 +52,16 @@ class AutomaticDiscoveryProvider(Protocol):
     name: str
 
     async def discover(
-        self, market: MarketConfig, cohort: str, *, limit: int
+        self, market: MarketConfig, cohort: str, limit: int
     ) -> Sequence[CandidateSeed]: ...
 
     def readiness(self) -> str: ...
+
+
+class DiscoverySource(AutomaticDiscoveryProvider, Protocol):
+    """Public asynchronous discovery source contract."""
+
+    async def aclose(self) -> None: ...
 
 
 def utc_now() -> datetime:

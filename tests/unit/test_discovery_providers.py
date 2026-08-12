@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 from datetime import UTC, datetime
 
 import httpx
@@ -13,7 +15,9 @@ from openclaw_web.discovery import (
     DiscoveryProviderError,
     DiscoveryRateLimitError,
     GooglePlacesDiscoveryProvider,
+    GooglePlacesDiscoverySource,
     SerperDiscoveryProvider,
+    SerperDiscoverySource,
 )
 from openclaw_web.settings import MarketCenter, MarketConfig
 
@@ -29,6 +33,19 @@ MARKET = MarketConfig(
 
 def _clock() -> datetime:
     return NOW
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_type", [SerperDiscoverySource, GooglePlacesDiscoverySource])
+async def test_exact_source_constructor_owns_optional_client_lifecycle(
+    source_type: type[SerperDiscoverySource | GooglePlacesDiscoverySource],
+) -> None:
+    source = source_type(api_key="secret")
+
+    assert source.readiness() == "ready"
+    async with source as entered:
+        assert entered is source
+    await source.aclose()
 
 
 @pytest.mark.parametrize("key", ["", "  "])
@@ -239,7 +256,126 @@ async def test_places_stops_on_repeated_page_token() -> None:
             MARKET, "other", limit=10
         )
 
-    assert calls == 2
+    assert calls == 14
+
+
+def _haversine_km(first: tuple[float, float], second: tuple[float, float]) -> float:
+    lat1, lon1 = map(math.radians, first)
+    lat2, lon2 = map(math.radians, second)
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    value = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return 6371.0088 * 2 * math.asin(math.sqrt(value))
+
+
+def _destination(
+    center: tuple[float, float], distance_km: float, bearing: float
+) -> tuple[float, float]:
+    lat, lon = map(math.radians, center)
+    angular = distance_km / 6371.0088
+    direction = math.radians(bearing)
+    target_lat = math.asin(
+        math.sin(lat) * math.cos(angular) + math.cos(lat) * math.sin(angular) * math.cos(direction)
+    )
+    target_lon = lon + math.atan2(
+        math.sin(direction) * math.sin(angular) * math.cos(lat),
+        math.cos(angular) - math.sin(lat) * math.sin(target_lat),
+    )
+    return math.degrees(target_lat), ((math.degrees(target_lon) + 180) % 360) - 180
+
+
+@pytest.mark.asyncio
+async def test_places_partitions_full_80km_market_with_exact_bounded_circles() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"places": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await GooglePlacesDiscoverySource(
+            api_key="secret", client=client, max_pages=1, max_requests=7
+        ).discover(MARKET, "other", limit=10)
+
+    assert len(bodies) == 7
+    circles = [body["locationRestriction"]["circle"] for body in bodies]  # type: ignore[index]
+    assert all(circle["radius"] == 50_000.0 for circle in circles)  # type: ignore[index]
+    assert circles[0]["center"] == {"latitude": 21.0278, "longitude": 105.8342}  # type: ignore[index]
+    assert len({json.dumps(circle, sort_keys=True) for circle in circles}) == 7
+
+    expected_centers = [
+        market_center := (MARKET.center.latitude, MARKET.center.longitude),
+        *[_destination(market_center, 40, bearing) for bearing in range(0, 360, 60)],
+    ]
+    for circle, expected in zip(circles, expected_centers, strict=True):
+        assert (
+            circle["center"]["latitude"],  # type: ignore[index]
+            circle["center"]["longitude"],  # type: ignore[index]
+        ) == pytest.approx(expected)
+
+    query_circles = [
+        (
+            (circle["center"]["latitude"], circle["center"]["longitude"]),  # type: ignore[index]
+            circle["radius"] / 1000,  # type: ignore[index,operator]
+        )
+        for circle in circles
+    ]
+    for bearing in range(0, 360, 5):
+        boundary = _destination(market_center, MARKET.radius_km, bearing)
+        assert any(_haversine_km(boundary, center) <= radius for center, radius in query_circles)
+
+
+@pytest.mark.asyncio
+async def test_places_rejects_partition_that_exceeds_request_budget_before_network() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"places": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        source = GooglePlacesDiscoverySource(
+            api_key="secret", client=client, max_pages=2, max_requests=13
+        )
+        with pytest.raises(DiscoveryConfigurationError, match="request budget"):
+            await source.discover(MARKET, "other", limit=10)
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_places_scopes_page_tokens_to_centers_and_deduplicates_results() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if "pageToken" not in body:
+            return httpx.Response(
+                200,
+                json={
+                    "places": [
+                        {
+                            "id": "same",
+                            "displayName": {"text": "Same"},
+                            "location": {"latitude": 21.03, "longitude": 105.83},
+                            "websiteUri": "https://same.example.com",
+                        }
+                    ],
+                    "nextPageToken": "shared-token",
+                },
+            )
+        return httpx.Response(200, json={"places": [], "nextPageToken": "shared-token"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        seeds = await GooglePlacesDiscoverySource(
+            api_key="secret", client=client, max_pages=2, max_requests=14
+        ).discover(MARKET, "other", limit=200)
+
+    assert len(requests) == 14
+    assert sum(body.get("pageToken") == "shared-token" for body in requests) == 7
+    assert len(seeds) == 1
+    assert seeds[0].metadata["search_center"] == 0
 
 
 @pytest.mark.parametrize("limit", [True, 0, -1, 201])

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Self
 from urllib.parse import quote_plus
 
 import httpx
@@ -16,6 +17,7 @@ from openclaw_web.discovery.base import (
     AsyncRateLimiter,
     AsyncSleeper,
     Clock,
+    DiscoveryConfigurationError,
     DiscoveryPayloadError,
     DiscoveryProviderError,
     MonotonicClock,
@@ -49,13 +51,13 @@ _TERMS = {
 }
 
 
-class GooglePlacesDiscoveryProvider:
+class GooglePlacesDiscoverySource:
     name = "google-places"
 
     def __init__(
         self,
-        client: httpx.AsyncClient,
         api_key: str | SecretStr,
+        client: httpx.AsyncClient | None = None,
         *,
         clock: Clock = utc_now,
         monotonic: MonotonicClock = time.monotonic,
@@ -64,20 +66,71 @@ class GooglePlacesDiscoveryProvider:
         timeout_seconds: float = 10,
         page_size: int = 20,
         max_pages: int = 5,
+        max_requests: int = 100,
     ) -> None:
-        self._client = client
         self._api_key = _key(api_key)
         self._clock = clock
         self._timeout = httpx.Timeout(timeout_seconds)
         self._page_size = positive_int(page_size, field="page_size", cap=20)
         self._max_pages = positive_int(max_pages, field="max_pages", cap=20)
+        self._max_requests = positive_int(max_requests, field="max_requests", cap=400)
         self._limiter = AsyncRateLimiter(min_interval_seconds, monotonic=monotonic, sleeper=sleeper)
+        self._client = client if client is not None else httpx.AsyncClient()
+        self._owns_client = client is None
 
     def readiness(self) -> str:
         return "ready"
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(ready=True)"
+
+    async def aclose(self) -> None:
+        if self._owns_client and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.aclose()
+
+    @staticmethod
+    def _destination(
+        latitude: float, longitude: float, distance_km: float, bearing_degrees: float
+    ) -> tuple[float, float]:
+        earth_radius_km = 6371.0088
+        lat = math.radians(latitude)
+        lon = math.radians(longitude)
+        angular = distance_km / earth_radius_km
+        bearing = math.radians(bearing_degrees)
+        target_lat = math.asin(
+            math.sin(lat) * math.cos(angular)
+            + math.cos(lat) * math.sin(angular) * math.cos(bearing)
+        )
+        target_lon = lon + math.atan2(
+            math.sin(bearing) * math.sin(angular) * math.cos(lat),
+            math.cos(angular) - math.sin(lat) * math.sin(target_lat),
+        )
+        return math.degrees(target_lat), ((math.degrees(target_lon) + 180) % 360) - 180
+
+    @classmethod
+    def _search_circles(cls, market: MarketConfig) -> tuple[tuple[float, float, float], ...]:
+        radius = market.radius_km
+        if radius <= 50:
+            return ((market.center.latitude, market.center.longitude, radius),)
+        if radius > 80:
+            raise DiscoveryConfigurationError("market radius cannot be covered by bounded searches")
+        # Six 50 km circles on a radius/2 ring cover every radial segment of a
+        # market up to 80 km.  The angular worst case is midway between adjacent
+        # centers (30 degrees), where the outer-boundary distance stays < 50 km.
+        ring_distance = radius / 2
+        circles = [(market.center.latitude, market.center.longitude, 50.0)]
+        for bearing in range(0, 360, 60):
+            latitude, longitude = cls._destination(
+                market.center.latitude, market.center.longitude, ring_distance, bearing
+            )
+            circles.append((latitude, longitude, 50.0))
+        return tuple(circles)
 
     async def _request(self, payload: Mapping[str, object]) -> Any:
         await self._limiter.wait()
@@ -101,59 +154,78 @@ class GooglePlacesDiscoveryProvider:
             raise DiscoveryPayloadError("invalid provider payload") from None
 
     async def discover(
-        self, market: MarketConfig, cohort: str, *, limit: int
+        self, market: MarketConfig, cohort: str, limit: int
     ) -> tuple[CandidateSeed, ...]:
         requested = validate_limit(limit, cap=_MAX_RESULTS)
         if cohort not in APPROVED_COHORTS:
             raise ValueError("cohort must be approved")
         query = f'{_TERMS[cohort]} "{market.center.name}"'
-        token: str | None = None
-        seen_tokens: set[str] = set()
         seen_urls: set[str] = set()
+        seen_places: set[str] = set()
         results: list[CandidateSeed] = []
-        for _page in range(self._max_pages):
-            body: dict[str, object] = {
-                "textQuery": query,
-                "pageSize": self._page_size,
-                "locationRestriction": {
-                    "circle": {
-                        "center": {
-                            "latitude": market.center.latitude,
-                            "longitude": market.center.longitude,
-                        },
-                        "radius": min(market.radius_km * 1000, 50_000.0),
-                    }
-                },
-            }
-            if token is not None:
-                body["pageToken"] = token
-            payload = await self._request(body)
-            if not isinstance(payload, dict) or set(payload) - {"places", "nextPageToken"}:
-                raise DiscoveryPayloadError("invalid provider payload")
-            places = payload.get("places", [])
-            if not isinstance(places, list) or len(places) > 20:
-                raise DiscoveryPayloadError("invalid provider payload")
-            for place in places:
-                seed = self._seed(place, cohort, query)
-                if seed is None:
-                    continue
-                canonical = str(seed.url)
-                if canonical in seen_urls:
-                    continue
-                seen_urls.add(canonical)
-                results.append(seed)
-                if len(results) >= requested:
-                    return tuple(results)
-            next_token = payload.get("nextPageToken")
-            if not isinstance(next_token, str) or not next_token.strip():
-                break
-            token = next_token.strip()
-            if token in seen_tokens:
-                break
-            seen_tokens.add(token)
+        circles = self._search_circles(market)
+        required_requests = len(circles) * self._max_pages
+        if required_requests > self._max_requests:
+            raise DiscoveryConfigurationError("request budget cannot cover the configured market")
+        for center_index, (latitude, longitude, radius_km) in enumerate(circles):
+            token: str | None = None
+            seen_tokens: set[str] = set()
+            for page in range(self._max_pages):
+                body: dict[str, object] = {
+                    "textQuery": query,
+                    "pageSize": self._page_size,
+                    "locationRestriction": {
+                        "circle": {
+                            "center": {
+                                "latitude": latitude,
+                                "longitude": longitude,
+                            },
+                            "radius": radius_km * 1000,
+                        }
+                    },
+                }
+                if token is not None:
+                    body["pageToken"] = token
+                payload = await self._request(body)
+                if not isinstance(payload, dict) or set(payload) - {"places", "nextPageToken"}:
+                    raise DiscoveryPayloadError("invalid provider payload")
+                places = payload.get("places", [])
+                if not isinstance(places, list) or len(places) > 20:
+                    raise DiscoveryPayloadError("invalid provider payload")
+                for place in places:
+                    seed = self._seed(place, cohort, query, center_index, page, token)
+                    if seed is None:
+                        continue
+                    canonical = str(seed.url)
+                    provider_identity = seed.external_id
+                    if canonical in seen_urls or (
+                        provider_identity is not None and provider_identity in seen_places
+                    ):
+                        continue
+                    seen_urls.add(canonical)
+                    if provider_identity is not None:
+                        seen_places.add(provider_identity)
+                    results.append(seed)
+                    if len(results) >= requested:
+                        return tuple(results)
+                next_token = payload.get("nextPageToken")
+                if not isinstance(next_token, str) or not next_token.strip():
+                    break
+                token = next_token.strip()
+                if token in seen_tokens:
+                    break
+                seen_tokens.add(token)
         return tuple(results)
 
-    def _seed(self, place: object, cohort: str, query: str) -> CandidateSeed | None:
+    def _seed(
+        self,
+        place: object,
+        cohort: str,
+        query: str,
+        center_index: int,
+        page: int,
+        page_token: str | None,
+    ) -> CandidateSeed | None:
         if not isinstance(place, dict):
             return None
         name = place.get("displayName")
@@ -199,8 +271,21 @@ class GooglePlacesDiscoveryProvider:
                     "external_id": place_id
                     if isinstance(place_id, str) and place_id.strip()
                     else None,
-                    "metadata": {"provider": "google-places", "query": query[:200]},
+                    "metadata": {
+                        "provider": "google-places",
+                        "query": query[:200],
+                        "search_center": center_index,
+                        "page": page + 1,
+                        "page_token": page_token,
+                    },
                 }
             )
         except (UnsafeTarget, ValidationError, ValueError):
             return None
+
+
+class GooglePlacesDiscoveryProvider(GooglePlacesDiscoverySource):
+    """Compatibility wrapper for the original client-first constructor."""
+
+    def __init__(self, client: httpx.AsyncClient, api_key: str | SecretStr, **kwargs: Any) -> None:
+        super().__init__(api_key=api_key, client=client, **kwargs)

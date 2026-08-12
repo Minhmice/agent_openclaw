@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Self
 from urllib.parse import quote_plus
 
 import httpx
@@ -78,13 +78,13 @@ def _raise_status(response: httpx.Response) -> None:
         raise DiscoveryPayloadError("provider rejected discovery request")
 
 
-class SerperDiscoveryProvider:
+class SerperDiscoverySource:
     name = "serper"
 
     def __init__(
         self,
-        client: httpx.AsyncClient,
         api_key: str | SecretStr,
+        client: httpx.AsyncClient | None = None,
         *,
         clock: Clock = utc_now,
         monotonic: MonotonicClock = time.monotonic,
@@ -94,19 +94,30 @@ class SerperDiscoveryProvider:
         page_size: int = 10,
         max_pages: int = 5,
     ) -> None:
-        self._client = client
         self._api_key = _key(api_key)
         self._clock = clock
         self._timeout = httpx.Timeout(timeout_seconds)
         self._page_size = positive_int(page_size, field="page_size", cap=100)
         self._max_pages = positive_int(max_pages, field="max_pages", cap=20)
         self._limiter = AsyncRateLimiter(min_interval_seconds, monotonic=monotonic, sleeper=sleeper)
+        self._client = client if client is not None else httpx.AsyncClient()
+        self._owns_client = client is None
 
     def readiness(self) -> str:
         return "ready"
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(ready=True)"
+
+    async def aclose(self) -> None:
+        if self._owns_client and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.aclose()
 
     @staticmethod
     def _query(market: MarketConfig, cohort: str) -> str:
@@ -135,7 +146,7 @@ class SerperDiscoveryProvider:
             raise DiscoveryPayloadError("invalid provider payload") from None
 
     async def discover(
-        self, market: MarketConfig, cohort: str, *, limit: int
+        self, market: MarketConfig, cohort: str, limit: int
     ) -> tuple[CandidateSeed, ...]:
         requested = validate_limit(limit, cap=_MAX_RESULTS)
         results: list[CandidateSeed] = []
@@ -188,3 +199,10 @@ class SerperDiscoveryProvider:
             if not organic or valid_on_page == 0 and page > 1:
                 break
         return tuple(results)
+
+
+class SerperDiscoveryProvider(SerperDiscoverySource):
+    """Compatibility wrapper for the original client-first constructor."""
+
+    def __init__(self, client: httpx.AsyncClient, api_key: str | SecretStr, **kwargs: Any) -> None:
+        super().__init__(api_key=api_key, client=client, **kwargs)

@@ -21,6 +21,7 @@ from openclaw_web.discovery.base import (
 from openclaw_web.discovery.base import (
     DiscoveryRateLimitError as DiscoveryRateLimitError,
 )
+from openclaw_web.discovery.base import DiscoverySource as DiscoverySource
 from openclaw_web.discovery.batch import (
     CsvDiscoverySource as CsvDiscoverySource,
 )
@@ -32,6 +33,9 @@ from openclaw_web.discovery.batch import (
 )
 from openclaw_web.discovery.places import (
     GooglePlacesDiscoveryProvider as GooglePlacesDiscoveryProvider,
+)
+from openclaw_web.discovery.places import (
+    GooglePlacesDiscoverySource as GooglePlacesDiscoverySource,
 )
 from openclaw_web.discovery.scheduler import (
     APPROVED_COHORTS,
@@ -47,6 +51,7 @@ from openclaw_web.discovery.scheduler import (
     schedule_candidates_detailed,
 )
 from openclaw_web.discovery.serper import SerperDiscoveryProvider as SerperDiscoveryProvider
+from openclaw_web.discovery.serper import SerperDiscoverySource as SerperDiscoverySource
 from openclaw_web.discovery.service import (
     CandidateRepository as CandidateRepository,
 )
@@ -65,11 +70,31 @@ from openclaw_web.discovery.service import (
 
 __all__ = [
     "APPROVED_COHORTS",
+    "AutomaticDiscoveryProvider",
+    "BatchDiscoverySource",
+    "CandidateRepository",
     "CohortAssignment",
     "CohortCandidate",
     "CohortConfig",
+    "CsvDiscoverySource",
+    "DiscoveryConfigurationError",
+    "DiscoveryError",
+    "DiscoveryOutcome",
+    "DiscoveryPayloadError",
+    "DiscoveryProcessResult",
+    "DiscoveryProviderError",
+    "DiscoveryRateLimitError",
+    "DiscoveryReadiness",
+    "DiscoveryService",
+    "DiscoverySource",
+    "GooglePlacesDiscoveryProvider",
+    "GooglePlacesDiscoverySource",
+    "JsonDiscoverySource",
+    "ManualUrlDiscoverySource",
     "SchedulerCursor",
     "SchedulerResult",
+    "SerperDiscoveryProvider",
+    "SerperDiscoverySource",
     "allocate_cohort_budget",
     "assign_cohort",
     "load_cohort_config",
