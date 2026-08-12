@@ -20,6 +20,19 @@ class PeerStream:
         return None
 
 
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.sleeps.append(delay)
+        self.now += delay
+
+
 def public_resolver(_host: str) -> Iterable[str]:
     return (PUBLIC_IP,)
 
@@ -261,11 +274,7 @@ async def test_robots_unreachable_denies_and_loaded_policy_honors_delay() -> Non
     await unavailable_client.aclose()
 
     requested: list[str] = []
-    times = iter((0.0, 0.0, 0.0, 0.0, 0.0))
-    sleeps: list[float] = []
-
-    async def sleep(delay: float) -> None:
-        sleeps.append(delay)
+    clock = FakeClock()
 
     client = client_for(
         {
@@ -284,11 +293,95 @@ async def test_robots_unreachable_denies_and_loaded_policy_honors_delay() -> Non
     result = await WebsiteCrawler(
         client=client,
         resolver=public_resolver,
-        monotonic=lambda: next(times),
-        sleeper=sleep,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
     ).crawl("https://example.com/")
     assert any(failure.reason == "robots disallowed" for failure in result.failures)
-    assert sleeps == [2.0]
+    assert clock.sleeps == [2.0, 2.0]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_default_domain_rate_limit_applies_without_crawl_delay() -> None:
+    requested: list[str] = []
+    clock = FakeClock()
+    client = client_for(
+        {
+            "https://example.com/robots.txt": httpx.Response(404),
+            "https://example.com/": html("Home"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(
+        client=client,
+        resolver=public_resolver,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+    ).crawl("https://example.com/")
+
+    assert [page.url for page in result.pages] == ["https://example.com/"]
+    assert requested == ["https://example.com/robots.txt", "https://example.com/"]
+    assert clock.sleeps == [1.0]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_default_domain_rate_limit_is_shared_across_subdomains_schemes_and_ports() -> None:
+    requested: list[str] = []
+    clock = FakeClock()
+    client = client_for(
+        {
+            "https://www.example.com/robots.txt": httpx.Response(404),
+            "https://www.example.com/": html(
+                '<a href="http://shop.example.com:8443/contact">Contact</a>'
+            ),
+            "http://shop.example.com:8443/robots.txt": httpx.Response(404),
+            "http://shop.example.com:8443/contact": html("Contact"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(
+        client=client,
+        resolver=public_resolver,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+    ).crawl("https://www.example.com/")
+
+    assert [page.url for page in result.pages] == [
+        "https://www.example.com/",
+        "http://shop.example.com:8443/contact",
+    ]
+    assert clock.sleeps == [1.0, 1.0, 1.0]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_robots_crawl_delay_larger_than_default_domain_rate_limit_wins() -> None:
+    requested: list[str] = []
+    clock = FakeClock()
+    client = client_for(
+        {
+            "https://example.com/robots.txt": httpx.Response(
+                200,
+                text="User-agent: *\nAllow: /\nCrawl-delay: 2\n",
+                headers={"Content-Type": "text/plain"},
+            ),
+            "https://example.com/": html("Home"),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(
+        client=client,
+        resolver=public_resolver,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+    ).crawl("https://example.com/")
+
+    assert [page.url for page in result.pages] == ["https://example.com/"]
+    assert clock.sleeps == [2.0]
     await client.aclose()
 
 
@@ -438,11 +531,7 @@ async def test_same_site_cross_origin_redirect_fails_closed_when_robots_unreacha
 @pytest.mark.asyncio
 async def test_same_site_cross_origin_redirect_uses_destination_crawl_delay() -> None:
     requested: list[str] = []
-    times = iter((0.0, 0.0, 0.0))
-    sleeps: list[float] = []
-
-    async def sleep(delay: float) -> None:
-        sleeps.append(delay)
+    clock = FakeClock()
 
     client = client_for(
         {
@@ -466,13 +555,13 @@ async def test_same_site_cross_origin_redirect_uses_destination_crawl_delay() ->
     result = await WebsiteCrawler(
         client=client,
         resolver=public_resolver,
-        monotonic=lambda: next(times),
-        sleeper=sleep,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
     ).crawl("https://www.example.com/")
 
     assert [page.url for page in result.pages] == ["https://shop.example.com/final"]
     assert requested.count("https://shop.example.com/robots.txt") == 1
-    assert sleeps == [2.0]
+    assert clock.sleeps == [1.0, 1.0, 2.0, 2.0]
     await client.aclose()
 
 
@@ -498,6 +587,33 @@ async def test_two_redirect_aliases_produce_one_canonical_page_record() -> None:
         "https://example.com/",
         "https://example.com/canonical",
     ]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_inner_failure_url_strips_query_and_fragment_without_losing_path() -> None:
+    requested: list[str] = []
+    client = client_for(
+        {
+            "https://example.com/robots.txt": httpx.Response(404),
+            "https://example.com/": html(
+                '<a href="/private/report?token=secret#details">Report</a>'
+            ),
+            "https://example.com/private/report?token=secret": html("failure", status=500),
+        },
+        requested,
+    )
+
+    result = await WebsiteCrawler(client=client, resolver=public_resolver).crawl(
+        "https://example.com/"
+    )
+
+    assert len(result.failures) == 1
+    failure = result.failures[0]
+    assert failure.url == "https://example.com/private/report"
+    assert "?" not in failure.url
+    assert "secret" not in failure.url
+    assert "secret" not in failure.reason
     await client.aclose()
 
 

@@ -33,6 +33,7 @@ _PRIORITY_TERMS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (2, ("about", "gioi-thieu", "company")),
 )
 _USER_AGENT = "OpenClawWebAudit/1.0"
+_DEFAULT_REQUEST_INTERVAL = 1.0
 _Extractor: TypeAlias = tldextract.TLDExtract
 _PolicyLoader: TypeAlias = Callable[[str], Awaitable[RobotsPolicy]]
 
@@ -59,6 +60,22 @@ def _registrable_domain(url: str, extractor: _Extractor) -> str:
     result = extractor(host)
     registered = result.top_domain_under_public_suffix
     return registered or host
+
+
+def _failure_url(url: str) -> str:
+    """Return a useful URL identity without credentials, query data, or fragments."""
+
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return ""
+    if parts.scheme not in {"http", "https"} or host is None:
+        return ""
+    safe_host = f"[{host}]" if ":" in host else host
+    netloc = f"{safe_host}:{port}" if port is not None else safe_host
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,20 +131,23 @@ class _DomainLimiter:
         self._monotonic = monotonic
         self._sleeper = sleeper
         self._last_request: dict[str, float] = {}
-        self._lock = asyncio.Lock()
+        self._locks: dict[str, asyncio.Lock] = {}
 
-    async def wait(self, origin: str, delay: float | None) -> None:
-        if delay is None or delay <= 0:
-            return
-        async with self._lock:
+    async def wait(self, domain: str, crawl_delay: float | None) -> None:
+        delay = max(
+            _DEFAULT_REQUEST_INTERVAL,
+            crawl_delay if crawl_delay is not None and crawl_delay > 0 else 0.0,
+        )
+        lock = self._locks.setdefault(domain, asyncio.Lock())
+        async with lock:
             now = self._monotonic()
-            previous = self._last_request.get(origin)
+            previous = self._last_request.get(domain)
             if previous is not None:
                 remaining = delay - (now - previous)
                 if remaining > 0:
                     await self._sleeper(remaining)
-                    now += remaining
-            self._last_request[origin] = now
+                    now = self._monotonic()
+            self._last_request[domain] = now
 
 
 class WebsiteCrawler:
@@ -228,7 +248,9 @@ class WebsiteCrawler:
                 if not allowed:
                     raise ValueError("robots disallowed")
                 current_delay = policy.crawl_delay(_USER_AGENT)
-            await self._limiter.wait(current_origin, current_delay)
+            await self._limiter.wait(
+                _registrable_domain(current, self._extractor), current_delay
+            )
             async with self._client.stream(
                 "GET",
                 current,
@@ -315,7 +337,13 @@ class WebsiteCrawler:
             start = normalize_url(start_url)
             resolve_and_validate(urlsplit(start).hostname or "", self._resolver)
         except UnsafeTarget:
-            return CrawlResult(str(start_url).partition("?")[0], (), (CrawlFailure("", "unsafe crawl target"),), False)
+            sanitized_start = _failure_url(str(start_url))
+            return CrawlResult(
+                sanitized_start,
+                (),
+                (CrawlFailure(sanitized_start, "unsafe crawl target"),),
+                False,
+            )
         site = _registrable_domain(start, self._extractor)
         frontier: list[tuple[int, int, str]] = [(_priority(start), 0, start)]
         queued = {start}
@@ -342,14 +370,14 @@ class WebsiteCrawler:
             origin = _origin(url)
             policy = await policy_for(origin)
             if policy.fetch_outcome is RobotsFetchOutcome.UNREACHABLE:
-                failures.append(CrawlFailure(url, "robots policy unreachable"))
+                failures.append(CrawlFailure(_failure_url(url), "robots policy unreachable"))
                 continue
             try:
                 allowed = policy.allowed(_USER_AGENT, url)
             except UnsafeTarget:
                 allowed = False
             if not allowed:
-                failures.append(CrawlFailure(url, "robots disallowed"))
+                failures.append(CrawlFailure(_failure_url(url), "robots disallowed"))
                 continue
             try:
                 page = await self._fetch_page(
@@ -360,7 +388,7 @@ class WebsiteCrawler:
             except asyncio.CancelledError:
                 raise
             except (httpx.HTTPError, UnsafeTarget):
-                failures.append(CrawlFailure(url, "page fetch failed"))
+                failures.append(CrawlFailure(_failure_url(url), "page fetch failed"))
                 continue
             except ValueError as error:
                 reason = str(error)
@@ -378,7 +406,12 @@ class WebsiteCrawler:
                     "unsupported page content type",
                     "unsupported page encoding",
                 }
-                failures.append(CrawlFailure(url, reason if reason in allowed_reasons else "page fetch failed"))
+                failures.append(
+                    CrawlFailure(
+                        _failure_url(url),
+                        reason if reason in allowed_reasons else "page fetch failed",
+                    )
+                )
                 continue
             if page.url in page_urls:
                 continue
