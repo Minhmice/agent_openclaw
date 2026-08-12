@@ -5,6 +5,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
+import stat
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +37,8 @@ _DEFAULT_MAX_BYTES = 2_000_000
 _DEFAULT_MAX_ITEMS = 2_000
 _DEFAULT_MANUAL_MAX_ITEMS = 200
 _DEFAULT_FIELD_SIZE = 64_000
+_MAX_JSON_DEPTH = 64
+_CSV_LIMIT_LOCK = threading.Lock()
 
 
 def _strict_json(text: str) -> Any:
@@ -48,7 +53,17 @@ def _strict_json(text: str) -> Any:
     def reject_constant(_value: str) -> None:
         raise ValueError("nonstandard JSON constant")
 
-    return json.loads(text, object_pairs_hook=unique, parse_constant=reject_constant)
+    parsed = json.loads(text, object_pairs_hook=unique, parse_constant=reject_constant)
+    stack: list[tuple[object, int]] = [(parsed, 1)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > _MAX_JSON_DEPTH:
+            raise ValueError("JSON nesting is too deep")
+        if isinstance(value, dict):
+            stack.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            stack.extend((item, depth + 1) for item in value)
+    return parsed
 
 
 def _parse_timestamp(value: object) -> datetime:
@@ -125,7 +140,7 @@ def _record_seed(
                 "metadata": _metadata(data.get("metadata")),
             }
         )
-    except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
+    except (KeyError, RecursionError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
         raise DiscoveryPayloadError(error_label) from None
 
 
@@ -190,7 +205,23 @@ class _FileSource:
 
     def _text(self) -> str:
         try:
-            data = self._path.read_bytes()
+            before = self._path.lstat()
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+                raise ValueError
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(self._path, flags)
+            try:
+                after = os.fstat(descriptor)
+                if not stat.S_ISREG(after.st_mode) or (before.st_dev, before.st_ino) != (
+                    after.st_dev,
+                    after.st_ino,
+                ):
+                    raise ValueError
+                with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                    data = handle.read(self._max_bytes + 1)
+            finally:
+                os.close(descriptor)
             if len(data) > self._max_bytes:
                 raise ValueError
             if data.startswith(b"\xef\xbb\xbf"):
@@ -237,22 +268,27 @@ class CsvDiscoverySource(_FileSource):
             first_line = lines[0] if lines else ""
             if any(not line.strip() for line in lines[1:]):
                 raise ValueError
-            headers = next(csv.reader([first_line]))
-            if (
-                not _REQUIRED <= set(headers)
-                or not set(headers) <= _COLUMNS
-                or len(headers) != len(set(headers))
-            ):
-                raise ValueError
-            old_limit = csv.field_size_limit()
-            try:
-                csv.field_size_limit(self._max_field_size)
-                reader = csv.DictReader(io.StringIO(text, newline=""))
-                rows = list(reader)
-            finally:
-                csv.field_size_limit(old_limit)
-            if reader.fieldnames != headers or any(None in row for row in rows):
-                raise ValueError
+            rows: list[dict[str, str | None]] = []
+            with _CSV_LIMIT_LOCK:
+                old_limit = csv.field_size_limit()
+                try:
+                    csv.field_size_limit(self._max_field_size)
+                    headers = next(csv.reader([first_line]))
+                    if (
+                        not _REQUIRED <= set(headers)
+                        or not set(headers) <= _COLUMNS
+                        or len(headers) != len(set(headers))
+                    ):
+                        raise ValueError
+                    reader = csv.DictReader(io.StringIO(text, newline=""))
+                    for index, row in enumerate(reader):
+                        if index >= self._max_items:
+                            raise ValueError
+                        rows.append(row)
+                    if reader.fieldnames != headers or any(None in row for row in rows):
+                        raise ValueError
+                finally:
+                    csv.field_size_limit(old_limit)
             if any(
                 not row or all(value is None or not value.strip() for value in row.values())
                 for row in rows
@@ -274,5 +310,5 @@ class JsonDiscoverySource(_FileSource):
             return self._seeds(payload, "json")
         except DiscoveryPayloadError:
             raise
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, RecursionError, TypeError, ValueError):
             raise DiscoveryPayloadError(f"invalid discovery file: {self._path.name}") from None

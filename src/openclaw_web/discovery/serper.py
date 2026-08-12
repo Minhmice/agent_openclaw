@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Self
 from urllib.parse import quote_plus
 
@@ -23,6 +26,8 @@ from openclaw_web.discovery.base import (
     MonotonicClock,
     normalized_clock,
     positive_int,
+    request_json,
+    response_byte_limit,
     utc_now,
     validate_limit,
 )
@@ -53,24 +58,34 @@ def _key(value: str | SecretStr) -> SecretStr:
     return SecretStr(raw.strip())
 
 
-def _retry_after(value: str | None) -> float | None:
+def _retry_after(value: str | None, *, now: datetime) -> float | None:
     if value is None:
         return None
     try:
         result = float(value)
     except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        result = (parsed.astimezone(UTC) - now.astimezone(UTC)).total_seconds()
+    if not math.isfinite(result):
         return None
-    return result if 0 <= result <= 3600 else None
+    return min(3600.0, max(0.0, result))
 
 
-def _raise_status(response: httpx.Response) -> None:
+def _raise_status(response: httpx.Response, *, clock: Clock = utc_now) -> None:
     status = response.status_code
     if status in (401, 403):
         raise DiscoveryConfigurationError("provider authentication failed")
     if status == 429:
         raise DiscoveryRateLimitError(
             "provider rate limit exceeded",
-            retry_after=_retry_after(response.headers.get("Retry-After")),
+            retry_after=_retry_after(
+                response.headers.get("Retry-After"), now=normalized_clock(clock)
+            ),
         )
     if 500 <= status:
         raise DiscoveryProviderError("provider service failed")
@@ -93,12 +108,14 @@ class SerperDiscoverySource:
         timeout_seconds: float = 10,
         page_size: int = 10,
         max_pages: int = 5,
+        max_response_bytes: int = 500_000,
     ) -> None:
         self._api_key = _key(api_key)
         self._clock = clock
         self._timeout = httpx.Timeout(timeout_seconds)
         self._page_size = positive_int(page_size, field="page_size", cap=100)
         self._max_pages = positive_int(max_pages, field="max_pages", cap=20)
+        self._max_response_bytes = response_byte_limit(max_response_bytes)
         self._limiter = AsyncRateLimiter(min_interval_seconds, monotonic=monotonic, sleeper=sleeper)
         self._client = client if client is not None else httpx.AsyncClient()
         self._owns_client = client is None
@@ -127,23 +144,19 @@ class SerperDiscoverySource:
 
     async def _request(self, payload: Mapping[str, object]) -> Any:
         await self._limiter.wait()
-        try:
-            response = await self._client.post(
-                _ENDPOINT,
-                headers={
-                    "X-API-KEY": self._api_key.get_secret_value(),
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self._timeout,
-            )
-        except httpx.HTTPError:
-            raise DiscoveryProviderError("provider request failed") from None
-        _raise_status(response)
-        try:
-            return response.json()
-        except ValueError:
-            raise DiscoveryPayloadError("invalid provider payload") from None
+        return await request_json(
+            self._client,
+            "POST",
+            _ENDPOINT,
+            headers={
+                "X-API-KEY": self._api_key.get_secret_value(),
+                "Content-Type": "application/json",
+            },
+            payload=payload,
+            timeout=self._timeout,
+            max_response_bytes=self._max_response_bytes,
+            status_handler=lambda response: _raise_status(response, clock=self._clock),
+        )
 
     async def discover(
         self, market: MarketConfig, cohort: str, limit: int
@@ -155,22 +168,18 @@ class SerperDiscoverySource:
             payload = await self._request(
                 {"q": self._query(market, cohort), "num": self._page_size, "page": page}
             )
-            if not isinstance(payload, dict) or set(payload) - {
-                "organic",
-                "searchParameters",
-                "credits",
-            }:
+            if not isinstance(payload, dict):
                 raise DiscoveryPayloadError("invalid provider payload")
             organic = payload.get("organic", [])
-            if not isinstance(organic, list) or len(organic) > 100:
+            if not isinstance(organic, list):
                 raise DiscoveryPayloadError("invalid provider payload")
             valid_on_page = 0
-            for entry in organic:
+            for entry in organic[: self._page_size]:
                 if not isinstance(entry, dict):
-                    continue
+                    raise DiscoveryPayloadError("invalid provider payload")
                 title, link = entry.get("title"), entry.get("link")
                 if not isinstance(title, str) or not title.strip() or not isinstance(link, str):
-                    continue
+                    raise DiscoveryPayloadError("invalid provider payload")
                 try:
                     canonical = normalize_url(link)
                     if canonical in seen:

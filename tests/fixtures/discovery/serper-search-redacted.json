@@ -1,0 +1,33 @@
+{
+  "searchParameters": {
+    "q": "doanh nghiệp Hà Nội website",
+    "type": "search",
+    "engine": "google",
+    "page": 1,
+    "num": 10
+  },
+  "organic": [
+    {
+      "title": "Example Company",
+      "link": "https://example.com/",
+      "snippet": "Redacted public search-result excerpt.",
+      "position": 1
+    }
+  ],
+  "knowledgeGraph": {
+    "title": "Example Company",
+    "type": "Organization"
+  },
+  "peopleAlsoAsk": [
+    {
+      "question": "What does Example Company do?",
+      "snippet": "Redacted answer excerpt."
+    }
+  ],
+  "relatedSearches": [
+    {
+      "query": "example company services"
+    }
+  ],
+  "credits": 1
+}

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import csv
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+import openclaw_web.discovery.batch as batch_module
+from openclaw_web.db.repository import DiscoverySeedUpsertResult
 from openclaw_web.discovery import (
     CsvDiscoverySource,
     DiscoveryConfigurationError,
@@ -128,6 +132,70 @@ def test_csv_bom_policy_is_explicit_and_row_limit_is_enforced(tmp_path: Path) ->
         CsvDiscoverySource(path, clock=_clock, max_items=1).discover()
 
 
+def test_file_sources_reject_directories_and_symlinks(tmp_path: Path) -> None:
+    target = tmp_path / "target.csv"
+    target.write_text("url,business_name\nhttps://x.test,X\n", encoding="utf-8")
+    link = tmp_path / "link.csv"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are unavailable on this platform")
+    for path in (tmp_path, link):
+        with pytest.raises(DiscoveryPayloadError, match="invalid discovery file"):
+            CsvDiscoverySource(path, clock=_clock).discover()
+
+
+def test_file_source_reads_only_max_bytes_plus_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "large.json"
+    with path.open("wb") as handle:
+        handle.seek(1_000_000)
+        handle.write(b"x")
+    monkeypatch.setattr(Path, "read_bytes", lambda self: pytest.fail("unbounded read_bytes used"))
+    with pytest.raises(DiscoveryPayloadError, match="large.json"):
+        JsonDiscoverySource(path, max_bytes=16).discover()
+
+
+def test_csv_field_size_limit_is_restored_across_concurrent_parses(tmp_path: Path) -> None:
+    small = tmp_path / "small.csv"
+    large = tmp_path / "large.csv"
+    small.write_text("url,business_name\nhttps://x.test," + "x" * 32 + "\n", encoding="utf-8")
+    large.write_text("url,business_name\nhttps://y.test," + "y" * 8 + "\n", encoding="utf-8")
+    original = csv.field_size_limit()
+
+    def parse(path: Path, size: int) -> str:
+        try:
+            return CsvDiscoverySource(path, max_field_size=size).discover()[0].business_name
+        except DiscoveryPayloadError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(parse, small, 16)
+        second = pool.submit(parse, large, 64)
+    assert first.result() == "rejected"
+    assert second.result() == "y" * 8
+    assert csv.field_size_limit() == original
+
+
+def test_csv_field_size_limit_lock_covers_header_and_row_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "seeds.csv"
+    path.write_text("url,business_name\nhttps://x.test,X\n", encoding="utf-8")
+    original_reader = csv.reader
+    lock_states: list[bool] = []
+
+    def guarded_reader(*args: object, **kwargs: object):
+        lock_states.append(batch_module._CSV_LIMIT_LOCK.locked())
+        return original_reader(*args, **kwargs)
+
+    monkeypatch.setattr(csv, "reader", guarded_reader)
+    CsvDiscoverySource(path).discover()
+
+    assert lock_states and all(lock_states)
+
+
 def test_json_rejects_duplicate_keys_at_any_depth_and_non_list_root(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.json"
     duplicate.write_text(
@@ -141,6 +209,48 @@ def test_json_rejects_duplicate_keys_at_any_depth_and_non_list_root(tmp_path: Pa
         JsonDiscoverySource(duplicate, clock=_clock).discover()
     with pytest.raises(DiscoveryPayloadError, match="root.json"):
         JsonDiscoverySource(root, clock=_clock).discover()
+
+
+def test_json_rejects_excessive_nesting_as_sanitized_payload_error(tmp_path: Path) -> None:
+    path = tmp_path / "deep.json"
+    nested = "[" * 200 + "0" + "]" * 200
+    path.write_text(
+        '[{"url":"https://x.test","business_name":"X","metadata":{"deep":' + nested + "}}]",
+        encoding="utf-8",
+    )
+    with pytest.raises(DiscoveryPayloadError, match="invalid discovery file: deep.json"):
+        JsonDiscoverySource(path).discover()
+
+
+def test_nested_metadata_recursion_is_sanitized(tmp_path: Path) -> None:
+    path = tmp_path / "deep-metadata.csv"
+    nested = "[" * 2_000 + "0" + "]" * 2_000
+    path.write_text(
+        'url,business_name,metadata\nhttps://x.test,X,""' + nested.replace('"', '""') + '""\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DiscoveryPayloadError, match="invalid discovery file: deep-metadata.csv"):
+        CsvDiscoverySource(path, max_field_size=10_000).discover()
+    with pytest.raises(DiscoveryPayloadError, match="invalid manual record"):
+        ManualUrlDiscoverySource(
+            [{"url": "https://x.test", "business_name": "X", "metadata": nested}]
+        ).discover()
+
+
+def test_manual_metadata_parser_recursion_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def recurse(_text: str) -> object:
+        raise RecursionError("parser detail must not escape")
+
+    monkeypatch.setattr(batch_module, "_strict_json", recurse)
+    with pytest.raises(DiscoveryPayloadError, match="invalid manual record") as raised:
+        ManualUrlDiscoverySource(
+            [{"url": "https://x.test", "business_name": "X", "metadata": "{}"}]
+        ).discover()
+
+    assert "parser detail" not in str(raised.value)
 
 
 @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
@@ -168,17 +278,15 @@ class _Repository:
     def __init__(self) -> None:
         self.urls: list[str] = []
 
-    def find_duplicate(self, candidate: CandidateSeed) -> None:
-        return None
-
-    def upsert_candidate(self, url: str, business_name: str, address: str | None) -> str:
-        self.urls.append(url)
-        return f"candidate:{url}"
+    def upsert_discovery_seed(self, seed: CandidateSeed, cohort: str) -> DiscoverySeedUpsertResult:
+        self.urls.append(str(seed.url))
+        return DiscoverySeedUpsertResult("inserted", f"candidate:{seed.url}")
 
 
 class _DuplicateRepository(_Repository):
-    def find_duplicate(self, candidate: CandidateSeed) -> CandidateSeed:
-        return candidate
+    def upsert_discovery_seed(self, seed: CandidateSeed, cohort: str) -> DiscoverySeedUpsertResult:
+        self.urls.append(str(seed.url))
+        return DiscoverySeedUpsertResult("duplicate", f"candidate:{seed.url}")
 
 
 def _seed(url: str, *, latitude: float | None, longitude: float | None, hint: str) -> CandidateSeed:
@@ -238,6 +346,58 @@ def test_service_cap_and_readiness_matrix() -> None:
     assert status.geofence == "not_ready"
     assert status.automatic_discovery == "not_ready"
     assert status.providers == ()
+
+
+def test_service_rejects_infinite_duplicate_input_after_bounded_consumption() -> None:
+    consumed = 0
+
+    def seeds() -> Iterator[CandidateSeed]:
+        nonlocal consumed
+        seed = _seed("https://same.example.com", latitude=None, longitude=None, hint="other")
+        while True:
+            consumed += 1
+            yield seed
+
+    service = DiscoveryService(max_seed_candidates=2, max_input_seeds=5)
+    with pytest.raises(DiscoveryPayloadError, match="too many candidate seeds"):
+        service.normalize_unique(seeds())
+    assert consumed == 6
+
+
+def test_service_merges_richer_same_domain_evidence_independent_of_input_order() -> None:
+    serper = _seed(
+        "https://example.com", latitude=None, longitude=None, hint="other"
+    ).validated_replace(
+        business_name="Example",
+        source_type="serper",
+        source_url="https://google.com/search?q=example",
+        metadata={"provider": "serper"},
+    )
+    places = serper.validated_replace(
+        url="https://www.example.com/about",
+        business_name="Example Company",
+        source_type="google-places",
+        source_url="https://maps.google.com/?cid=1",
+        address="Hà Nội",
+        latitude=21.03,
+        longitude=105.83,
+        external_id="place-1",
+        metadata={"provider": "google-places"},
+    )
+    first = DiscoveryService().normalize_unique([serper, places])[0]
+    second = DiscoveryService().normalize_unique([places, serper])[0]
+    for seed in (first, second):
+        assert (seed.latitude, seed.longitude, seed.address, seed.external_id) == (
+            21.03,
+            105.83,
+            "Hà Nội",
+            "place-1",
+        )
+        assert {item["source_type"] for item in seed.metadata["source_observations"]} == {
+            "serper",
+            "google-places",
+        }
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
 
 
 def test_service_upserts_duplicate_evidence_and_marks_outcome() -> None:

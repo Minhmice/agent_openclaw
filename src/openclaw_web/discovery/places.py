@@ -19,10 +19,11 @@ from openclaw_web.discovery.base import (
     Clock,
     DiscoveryConfigurationError,
     DiscoveryPayloadError,
-    DiscoveryProviderError,
     MonotonicClock,
     normalized_clock,
     positive_int,
+    request_json,
+    response_byte_limit,
     utc_now,
     validate_limit,
 )
@@ -67,6 +68,7 @@ class GooglePlacesDiscoverySource:
         page_size: int = 20,
         max_pages: int = 5,
         max_requests: int = 100,
+        max_response_bytes: int = 1_000_000,
     ) -> None:
         self._api_key = _key(api_key)
         self._clock = clock
@@ -74,6 +76,7 @@ class GooglePlacesDiscoverySource:
         self._page_size = positive_int(page_size, field="page_size", cap=20)
         self._max_pages = positive_int(max_pages, field="max_pages", cap=20)
         self._max_requests = positive_int(max_requests, field="max_requests", cap=400)
+        self._max_response_bytes = response_byte_limit(max_response_bytes)
         self._limiter = AsyncRateLimiter(min_interval_seconds, monotonic=monotonic, sleeper=sleeper)
         self._client = client if client is not None else httpx.AsyncClient()
         self._owns_client = client is None
@@ -134,24 +137,20 @@ class GooglePlacesDiscoverySource:
 
     async def _request(self, payload: Mapping[str, object]) -> Any:
         await self._limiter.wait()
-        try:
-            response = await self._client.post(
-                _ENDPOINT,
-                headers={
-                    "X-Goog-Api-Key": self._api_key.get_secret_value(),
-                    "X-Goog-FieldMask": _FIELD_MASK,
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self._timeout,
-            )
-        except httpx.HTTPError:
-            raise DiscoveryProviderError("provider request failed") from None
-        _raise_status(response)
-        try:
-            return response.json()
-        except ValueError:
-            raise DiscoveryPayloadError("invalid provider payload") from None
+        return await request_json(
+            self._client,
+            "POST",
+            _ENDPOINT,
+            headers={
+                "X-Goog-Api-Key": self._api_key.get_secret_value(),
+                "X-Goog-FieldMask": _FIELD_MASK,
+                "Content-Type": "application/json",
+            },
+            payload=payload,
+            timeout=self._timeout,
+            max_response_bytes=self._max_response_bytes,
+            status_handler=lambda response: _raise_status(response, clock=self._clock),
+        )
 
     async def discover(
         self, market: MarketConfig, cohort: str, limit: int
@@ -160,21 +159,23 @@ class GooglePlacesDiscoverySource:
         if cohort not in APPROVED_COHORTS:
             raise ValueError("cohort must be approved")
         query = f'{_TERMS[cohort]} "{market.center.name}"'
-        seen_urls: set[str] = set()
-        seen_places: set[str] = set()
-        results: list[CandidateSeed] = []
         circles = self._search_circles(market)
-        required_requests = len(circles) * self._max_pages
-        if required_requests > self._max_requests:
+        if len(circles) > self._max_requests:
             raise DiscoveryConfigurationError("request budget cannot cover the configured market")
-        for center_index, (latitude, longitude, radius_km) in enumerate(circles):
-            token: str | None = None
-            seen_tokens: set[str] = set()
-            for page in range(self._max_pages):
+        results: list[CandidateSeed] = []
+        tokens: list[str | None] = [None] * len(circles)
+        seen_tokens: list[set[str]] = [set() for _ in circles]
+        active = [True] * len(circles)
+        requests = 0
+        for page in range(self._max_pages):
+            for center_index, (latitude, longitude, radius_km) in enumerate(circles):
+                if not active[center_index] or requests >= self._max_requests:
+                    continue
+                token = tokens[center_index]
                 body: dict[str, object] = {
                     "textQuery": query,
                     "pageSize": self._page_size,
-                    "locationRestriction": {
+                    "locationBias": {
                         "circle": {
                             "center": {
                                 "latitude": latitude,
@@ -187,6 +188,7 @@ class GooglePlacesDiscoverySource:
                 if token is not None:
                     body["pageToken"] = token
                 payload = await self._request(body)
+                requests += 1
                 if not isinstance(payload, dict) or set(payload) - {"places", "nextPageToken"}:
                     raise DiscoveryPayloadError("invalid provider payload")
                 places = payload.get("places", [])
@@ -194,28 +196,37 @@ class GooglePlacesDiscoverySource:
                     raise DiscoveryPayloadError("invalid provider payload")
                 for place in places:
                     seed = self._seed(place, cohort, query, center_index, page, token)
-                    if seed is None:
-                        continue
-                    canonical = str(seed.url)
-                    provider_identity = seed.external_id
-                    if canonical in seen_urls or (
-                        provider_identity is not None and provider_identity in seen_places
-                    ):
-                        continue
-                    seen_urls.add(canonical)
-                    if provider_identity is not None:
-                        seen_places.add(provider_identity)
-                    results.append(seed)
-                    if len(results) >= requested:
-                        return tuple(results)
+                    if seed is not None:
+                        results.append(seed)
                 next_token = payload.get("nextPageToken")
                 if not isinstance(next_token, str) or not next_token.strip():
-                    break
-                token = next_token.strip()
-                if token in seen_tokens:
-                    break
-                seen_tokens.add(token)
-        return tuple(results)
+                    active[center_index] = False
+                    continue
+                normalized_token = next_token.strip()
+                if normalized_token in seen_tokens[center_index]:
+                    active[center_index] = False
+                    continue
+                seen_tokens[center_index].add(normalized_token)
+                tokens[center_index] = normalized_token
+            if requests >= self._max_requests or not any(active):
+                break
+
+        selected: list[CandidateSeed] = []
+        seen_urls: set[str] = set()
+        seen_places: set[str] = set()
+        for seed in results:
+            canonical = str(seed.url)
+            if canonical in seen_urls or (
+                seed.external_id is not None and seed.external_id in seen_places
+            ):
+                continue
+            seen_urls.add(canonical)
+            if seed.external_id is not None:
+                seen_places.add(seed.external_id)
+            selected.append(seed)
+            if len(selected) >= requested:
+                break
+        return tuple(selected)
 
     def _seed(
         self,

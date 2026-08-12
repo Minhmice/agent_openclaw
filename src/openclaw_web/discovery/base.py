@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
+
+import httpx
 
 from openclaw_web.models import CandidateSeed
 from openclaw_web.settings import MarketConfig
@@ -14,6 +17,10 @@ from openclaw_web.settings import MarketConfig
 Clock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
 AsyncSleeper = Callable[[float], Awaitable[None]]
+StatusHandler = Callable[[httpx.Response], None]
+
+_MAX_JSON_DEPTH = 64
+_MAX_RESPONSE_BYTES = 5_000_000
 
 
 class DiscoveryError(RuntimeError):
@@ -100,6 +107,87 @@ def nonnegative_float(value: float, *, field: str) -> float:
     if not math.isfinite(result) or result < 0:
         raise ValueError(f"{field} must be finite and nonnegative")
     return result
+
+
+def response_byte_limit(value: int) -> int:
+    return positive_int(value, field="max_response_bytes", cap=_MAX_RESPONSE_BYTES)
+
+
+def _strict_json_bytes(data: bytes, *, max_depth: int = _MAX_JSON_DEPTH) -> Any:
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("nonstandard JSON constant")
+
+    try:
+        parsed = json.loads(
+            data.decode("utf-8", errors="strict"),
+            object_pairs_hook=unique,
+            parse_constant=reject_constant,
+        )
+        stack: list[tuple[object, int]] = [(parsed, 1)]
+        while stack:
+            value, depth = stack.pop()
+            if depth > max_depth:
+                raise ValueError("JSON nesting is too deep")
+            if isinstance(value, dict):
+                stack.extend((item, depth + 1) for item in value.values())
+            elif isinstance(value, list):
+                stack.extend((item, depth + 1) for item in value)
+        return parsed
+    except (RecursionError, UnicodeError, ValueError):
+        raise DiscoveryPayloadError("invalid provider payload") from None
+
+
+async def request_json(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: object,
+    timeout: httpx.Timeout,
+    max_response_bytes: int,
+    status_handler: StatusHandler,
+) -> Any:
+    """Send one bounded streaming JSON request and return strict decoded JSON."""
+
+    limit = response_byte_limit(max_response_bytes)
+    try:
+        async with client.stream(
+            method, url, headers=headers, json=payload, timeout=timeout
+        ) as response:
+            status_handler(response)
+            media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if media_type != "application/json" and not media_type.endswith("+json"):
+                raise DiscoveryPayloadError("invalid provider payload")
+            declared = response.headers.get("Content-Length")
+            if declared is not None:
+                try:
+                    declared_size = int(declared, 10)
+                except ValueError:
+                    raise DiscoveryPayloadError("invalid provider payload") from None
+                if declared_size < 0 or declared_size > limit:
+                    raise DiscoveryPayloadError("invalid provider payload")
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                remaining = limit + 1 - len(body)
+                if remaining <= 0:
+                    raise DiscoveryPayloadError("invalid provider payload")
+                body.extend(chunk[:remaining])
+                if len(body) > limit or len(chunk) > remaining:
+                    raise DiscoveryPayloadError("invalid provider payload")
+            return _strict_json_bytes(bytes(body))
+    except DiscoveryError:
+        raise
+    except httpx.HTTPError:
+        raise DiscoveryProviderError("provider request failed") from None
 
 
 class AsyncRateLimiter:
