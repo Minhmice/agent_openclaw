@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, TypeAlias
 
 from openclaw_web.geofence.distance import haversine_km
@@ -35,20 +36,31 @@ def _normalize_public_text(value: str | None, *, field: str) -> str | None:
     return normalized
 
 
-def _canonical_admin_name(value: str, *, level: str) -> str:
-    normalized = _normalize_public_text(value, field=level)
+_ADMIN_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("thanh pho", "province"),
+    ("thi xa", "district"),
+    ("phuong", "phuong"),
+    ("huyen", "huyen"),
+    ("quan", "quan"),
+    ("xa", "xa"),
+    ("tp", "province"),
+    ("tx", "district"),
+    ("p", "phuong"),
+    ("h", "huyen"),
+    ("q", "quan"),
+    ("x", "xa"),
+)
+_ADMIN_LEVELS = frozenset({"province", "district", "bare", "quan", "huyen", "phuong", "xa"})
+
+
+def _parse_admin_unit(value: str, *, default_level: str) -> tuple[str, str]:
+    normalized = _normalize_public_text(value, field=default_level)
     assert normalized is not None
     normalized = re.sub(r"[^a-z0-9]+", " ", normalized).strip()
-    prefixes = {
-        "province": ("thanh pho", "tp"),
-        "district": ("quan", "q", "huyen", "h", "thi xa", "tx", "phuong", "p", "xa", "x"),
-    }
-    for prefix in prefixes[level]:
-        if normalized == prefix:
-            return normalized
+    for prefix, level in _ADMIN_PREFIXES:
         if normalized.startswith(f"{prefix} "):
-            return normalized[len(prefix) + 1 :]
-    return normalized
+            return level, normalized[len(prefix) + 1 :]
+    return default_level, normalized
 
 
 def _preserve_identifier(value: str | None, *, field: str) -> str | None:
@@ -105,17 +117,17 @@ class LocationEvidence:
             raise ValueError("latitude and longitude must be supplied together")
         object.__setattr__(self, "latitude", latitude)
         object.__setattr__(self, "longitude", longitude)
-        for field in ("address", "province", "district"):
+        for field_name in ("address", "province", "district"):
             object.__setattr__(
                 self,
-                field,
-                _normalize_public_text(getattr(self, field), field=field),
+                field_name,
+                _normalize_public_text(getattr(self, field_name), field=field_name),
             )
-        for field in ("source", "provenance"):
+        for field_name in ("source", "provenance"):
             object.__setattr__(
                 self,
-                field,
-                _preserve_identifier(getattr(self, field), field=field),
+                field_name,
+                _preserve_identifier(getattr(self, field_name), field=field_name),
             )
 
 
@@ -156,6 +168,33 @@ class AdministrativeFallbackEntry:
     confidence: Confidence
     admin_code: str | None = None
     compatibility_alias: bool = False
+    level: str | None = None
+
+    def __post_init__(self) -> None:
+        province_level, province = _parse_admin_unit(self.province, default_level="province")
+        if province_level != "province":
+            raise ValueError("fallback entry province must be province-level")
+        district = None
+        inferred_level = "province"
+        if self.district is not None:
+            inferred_level, district = _parse_admin_unit(self.district, default_level="district")
+        level = self.level or inferred_level
+        if level not in _ADMIN_LEVELS or level in {"bare", "province"} and district is not None:
+            raise ValueError("invalid fallback entry level")
+        if district is None and level != "province":
+            raise ValueError("province fallback entry must use province level")
+        if not isinstance(self.inside, bool):
+            raise TypeError("fallback entry inside must be boolean")
+        if not isinstance(self.confidence, Confidence):
+            raise TypeError("fallback entry confidence must be Confidence")
+        if not isinstance(self.compatibility_alias, bool):
+            raise TypeError("fallback entry compatibility_alias must be boolean")
+        object.__setattr__(self, "province", province)
+        object.__setattr__(self, "district", district)
+        object.__setattr__(
+            self, "admin_code", _preserve_identifier(self.admin_code, field="admin_code")
+        )
+        object.__setattr__(self, "level", level)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +205,22 @@ class AdministrativeFallbackAlias:
     alias: str
     canonical_name: str
     admin_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.level not in _ADMIN_LEVELS - {"bare", "district"}:
+            raise ValueError("invalid fallback alias level")
+        alias_level, alias = _parse_admin_unit(self.alias, default_level=self.level)
+        if alias_level != self.level:
+            raise ValueError("fallback alias prefix must match its level")
+        _, canonical_name = _parse_admin_unit(
+            self.canonical_name,
+            default_level="province" if self.level == "province" else "district",
+        )
+        object.__setattr__(self, "alias", alias)
+        object.__setattr__(self, "canonical_name", canonical_name)
+        object.__setattr__(
+            self, "admin_code", _preserve_identifier(self.admin_code, field="admin_code")
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +237,7 @@ class AdministrativeFallbackDataset:
     source_label: str
     entries: tuple[AdministrativeFallbackEntry, ...]
     aliases: tuple[AdministrativeFallbackAlias, ...] = ()
-    content_hash: str | None = None
+    content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         latitude = _coordinate(
@@ -202,8 +257,113 @@ class AdministrativeFallbackDataset:
         object.__setattr__(self, "center_latitude", latitude)
         object.__setattr__(self, "center_longitude", longitude)
         object.__setattr__(self, "radius_km", radius)
-        object.__setattr__(self, "entries", tuple(self.entries))
-        object.__setattr__(self, "aliases", tuple(self.aliases))
+        for metadata_field in (
+            "market_id",
+            "version",
+            "effective_date",
+            "admin_system_version",
+            "source_label",
+        ):
+            object.__setattr__(
+                self,
+                metadata_field,
+                _preserve_identifier(getattr(self, metadata_field), field=metadata_field),
+            )
+        entries = tuple(self.entries)
+        aliases = tuple(self.aliases)
+        if not all(isinstance(entry, AdministrativeFallbackEntry) for entry in entries):
+            raise TypeError("fallback entries must be AdministrativeFallbackEntry values")
+        if not all(isinstance(alias, AdministrativeFallbackAlias) for alias in aliases):
+            raise TypeError("fallback aliases must be AdministrativeFallbackAlias values")
+        object.__setattr__(self, "entries", entries)
+        object.__setattr__(self, "aliases", aliases)
+        if len({self._entry_key(entry) for entry in entries}) != len(entries):
+            raise ValueError("fallback entries must have unique stable keys")
+        self._validate_aliases()
+        object.__setattr__(self, "content_hash", self._derive_content_hash())
+
+    @staticmethod
+    def _entry_key(entry: AdministrativeFallbackEntry) -> tuple[str, str, str | None]:
+        assert entry.level is not None
+        return entry.level, entry.province, entry.district
+
+    def _alias_target(self, alias: AdministrativeFallbackAlias) -> tuple[str, str, str | None]:
+        candidates = tuple(
+            entry
+            for entry in self.entries
+            if (
+                entry.admin_code == alias.admin_code
+                if alias.admin_code is not None
+                else (
+                    entry.level == "province" and entry.province == alias.canonical_name
+                    if alias.level == "province"
+                    else entry.district == alias.canonical_name
+                )
+            )
+        )
+        if len(candidates) != 1:
+            raise ValueError("fallback alias target must identify exactly one entry")
+        return self._entry_key(candidates[0])
+
+    def _validate_aliases(self) -> None:
+        targets: dict[tuple[str, str], tuple[str, str, str | None]] = {}
+        entry_names = {
+            (level, entry.district)
+            for entry in self.entries
+            for level in (
+                {entry.level} if not entry.compatibility_alias else {"bare", "quan", "huyen"}
+            )
+            if entry.district is not None
+        }
+        for alias in self.aliases:
+            identity = alias.level, alias.alias
+            target = self._alias_target(alias)
+            if identity in targets or identity in entry_names:
+                raise ValueError("fallback alias collision")
+            targets[identity] = target
+
+    def _derive_content_hash(self) -> str:
+        entries = sorted(
+            (
+                {
+                    "level": entry.level,
+                    "province": entry.province,
+                    "district": entry.district,
+                    "admin_code": entry.admin_code,
+                    "inside": entry.inside,
+                    "confidence": entry.confidence.value,
+                    "compatibility_alias": entry.compatibility_alias,
+                }
+                for entry in self.entries
+            ),
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+        aliases = sorted(
+            (
+                {
+                    "level": alias.level,
+                    "alias": alias.alias,
+                    "canonical_name": alias.canonical_name,
+                    "admin_code": alias.admin_code,
+                }
+                for alias in self.aliases
+            ),
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+        material = {
+            "market_id": self.market_id,
+            "center_latitude": self.center_latitude,
+            "center_longitude": self.center_longitude,
+            "radius_km": self.radius_km,
+            "version": self.version,
+            "effective_date": self.effective_date,
+            "admin_system_version": self.admin_system_version,
+            "source_label": self.source_label,
+            "entries": entries,
+            "aliases": aliases,
+        }
+        encoded = json.dumps(material, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     @classmethod
     def hanoi_80km(cls) -> AdministrativeFallbackDataset:
@@ -234,14 +394,7 @@ class AdministrativeFallbackDataset:
                 for district in districts
             ),
         )
-        aliases = (
-            AdministrativeFallbackAlias("province", "thanh pho ha noi", "ha noi"),
-            AdministrativeFallbackAlias("province", "tp ha noi", "ha noi"),
-        )
-        material = "|".join(
-            f"{entry.province}:{entry.district}:{entry.inside}:{entry.confidence.value}"
-            for entry in entries
-        )
+        aliases = (AdministrativeFallbackAlias("province", "hanoi municipality", "ha noi"),)
         return cls(
             market_id="hanoi-80km",
             center_latitude=21.0285,
@@ -256,7 +409,6 @@ class AdministrativeFallbackDataset:
             source_label="curated Hanoi 80 km administrative fallback",
             entries=entries,
             aliases=aliases,
-            content_hash=hashlib.sha256(material.encode()).hexdigest(),
         )
 
 
@@ -409,17 +561,55 @@ class GeofenceService:
                 provider_reason=provider_reason,
                 fallback_admin_system_version=dataset.admin_system_version,
             )
-        province = _canonical_admin_name(evidence.province, level="province")
-        district = (
-            _canonical_admin_name(evidence.district, level="district")
-            if evidence.district is not None
-            else None
+        province_level, province = _parse_admin_unit(evidence.province, default_level="province")
+        if province_level != "province":
+            province = ""
+        province_alias = next(
+            (
+                alias
+                for alias in dataset.aliases
+                if alias.level == "province" and alias.alias == province
+            ),
+            None,
         )
+        if province_alias is not None:
+            province = province_alias.canonical_name
+        source_level: str | None = None
+        district: str | None = None
+        if evidence.district is not None:
+            source_level, district = _parse_admin_unit(evidence.district, default_level="bare")
+        alias_target: tuple[str, str, str | None] | None = None
+        if source_level is not None and district is not None:
+            alias = next(
+                (
+                    candidate
+                    for candidate in dataset.aliases
+                    if candidate.level == source_level and candidate.alias == district
+                ),
+                None,
+            )
+            if alias is not None:
+                alias_target = dataset._alias_target(alias)
         match = next(
             (
                 entry
                 for entry in dataset.entries
-                if entry.province == province and entry.district == district
+                if entry.province == province
+                and (
+                    (district is None and entry.district is None)
+                    or (alias_target is not None and dataset._entry_key(entry) == alias_target)
+                    or (
+                        entry.district == district
+                        and (
+                            entry.level == source_level
+                            or (
+                                entry.compatibility_alias
+                                and entry.level == "district"
+                                and source_level in {"bare", "quan", "huyen"}
+                            )
+                        )
+                    )
+                )
             ),
             None,
         )

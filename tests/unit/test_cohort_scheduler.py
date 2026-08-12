@@ -7,6 +7,7 @@ import yaml
 from openclaw_web.discovery.scheduler import (
     APPROVED_COHORTS,
     CohortCandidate,
+    CohortConfigError,
     allocate_cohort_budget,
     assign_cohort,
     load_cohort_config,
@@ -250,6 +251,18 @@ def test_scheduler_order_is_canonical_not_mapping_insertion_order() -> None:
     )
 
 
+def test_scheduler_deduplication_is_independent_of_candidate_input_order() -> None:
+    candidates = [
+        CohortCandidate("duplicate", "ecommerce"),
+        CohortCandidate("other", "other"),
+        CohortCandidate("duplicate", "manufacturer"),
+    ]
+    budgets = {"manufacturer": 1, "ecommerce": 1, "other": 1}
+    assert schedule_candidates(candidates, budgets) == schedule_candidates(
+        reversed(candidates), budgets
+    )
+
+
 def test_rotation_offset_distributes_overall_cap_without_starvation() -> None:
     candidates = [CohortCandidate(cohort, cohort) for cohort in APPROVED_COHORTS]
     budgets = dict.fromkeys(APPROVED_COHORTS, 1)
@@ -258,6 +271,30 @@ def test_rotation_offset_distributes_overall_cap_without_starvation() -> None:
         for offset in range(len(APPROVED_COHORTS))
     ]
     assert selected == list(APPROVED_COHORTS)
+
+
+def test_sparse_scheduler_rotates_only_across_eligible_nonempty_cohorts() -> None:
+    candidates = [
+        CohortCandidate("o1", "other"),
+        CohortCandidate("m1", "manufacturer"),
+        CohortCandidate("o2", "other"),
+        CohortCandidate("m2", "manufacturer"),
+    ]
+    budgets = dict.fromkeys(APPROVED_COHORTS, 2)
+    assert [
+        schedule_candidates(candidates, budgets, overall_cap=1, rotation_offset=offset)[0].cohort
+        for offset in range(4)
+    ] == ["manufacturer", "other", "manufacturer", "other"]
+    assert schedule_candidates(candidates, budgets, overall_cap=3, rotation_offset=1) == [
+        CohortCandidate("o1", "other"),
+        CohortCandidate("m1", "manufacturer"),
+        CohortCandidate("o2", "other"),
+    ]
+    assert schedule_candidates(candidates, budgets, overall_cap=3) == schedule_candidates(
+        [candidates[1], candidates[0], candidates[3], candidates[2]],
+        dict(reversed(tuple(budgets.items()))),
+        overall_cap=3,
+    )
 
 
 def test_all_cohort_yaml_contracts_are_strict_and_complete() -> None:
@@ -345,5 +382,67 @@ def test_cohort_yaml_loader_rejects_undefined_business_modifier(tmp_path: Path) 
     )
     path = tmp_path / "manufacturer.yaml"
     path.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match="_weight"):
+    with pytest.raises(CohortConfigError):
         load_cohort_config(path)
+
+
+@pytest.mark.parametrize("nested", (False, True))
+def test_cohort_yaml_loader_rejects_duplicate_keys_without_echoing_content(
+    tmp_path: Path, nested: bool
+) -> None:
+    source = Path(__file__).parents[2] / "config/scoring/cohorts/manufacturer.yaml"
+    text = source.read_text(encoding="utf-8")
+    secret = "do-not-echo-this-value"
+    if nested:
+        text = text.replace(
+            "  operational_scale_weight: 1.25",
+            f"  operational_scale_weight: 1.25\n  operational_scale_weight: {secret}",
+        )
+    else:
+        text += f"\ncohort_id: {secret}\n"
+    path = tmp_path / "manufacturer.yaml"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(CohortConfigError) as error:
+        load_cohort_config(path)
+    assert path.name in str(error.value)
+    assert secret not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ("manufacturer.yml", "manufacturer.YAML", "manufacturer.yaml.txt", "manufacturer.test.yaml"),
+)
+def test_cohort_yaml_loader_requires_exact_approved_yaml_filename(
+    tmp_path: Path, filename: str
+) -> None:
+    source = Path(__file__).parents[2] / "config/scoring/cohorts/manufacturer.yaml"
+    path = tmp_path / filename
+    path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    with pytest.raises(CohortConfigError):
+        load_cohort_config(path)
+
+
+def test_cohort_yaml_loader_rejects_made_up_weight_even_with_valid_suffix(tmp_path: Path) -> None:
+    source = Path(__file__).parents[2] / "config/scoring/cohorts/manufacturer.yaml"
+    text = source.read_text(encoding="utf-8").replace(
+        "  operational_scale_weight: 1.25", "  made_up_weight: 1.25"
+    )
+    path = tmp_path / "manufacturer.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(CohortConfigError):
+        load_cohort_config(path)
+
+
+def test_cohort_yaml_loader_rejects_another_cohorts_known_business_dimension(
+    tmp_path: Path,
+) -> None:
+    source = Path(__file__).parents[2] / "config/scoring/cohorts/manufacturer.yaml"
+    text = source.read_text(encoding="utf-8").replace(
+        "operational_scale_weight", "authority_weight"
+    )
+    path = tmp_path / "manufacturer.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(CohortConfigError) as error:
+        load_cohort_config(path)
+    assert error.value.__cause__ is None

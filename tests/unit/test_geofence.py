@@ -1,9 +1,11 @@
 import math
+from dataclasses import replace
 
 import pytest
 
 from openclaw_web.geofence.distance import haversine_km
 from openclaw_web.geofence.service import (
+    AdministrativeFallbackAlias,
     AdministrativeFallbackDataset,
     AdministrativeFallbackEntry,
     Confidence,
@@ -174,6 +176,53 @@ def test_fallback_dataset_is_versioned_immutable_and_bound_to_market() -> None:
     assert mismatch.reason == "fallback_market_mismatch"
 
 
+def test_fallback_content_hash_covers_all_semantics_and_ignores_collection_order() -> None:
+    dataset = AdministrativeFallbackDataset.hanoi_80km()
+    assert len(dataset.content_hash) == 64
+    assert dataset.content_hash == dataset.content_hash.lower()
+    assert (
+        replace(dataset, entries=tuple(reversed(dataset.entries))).content_hash
+        == dataset.content_hash
+    )
+    assert (
+        replace(dataset, aliases=tuple(reversed(dataset.aliases))).content_hash
+        == dataset.content_hash
+    )
+
+    assert (
+        replace(dataset, center_latitude=dataset.center_latitude + 0.01).content_hash
+        != dataset.content_hash
+    )
+    assert (
+        replace(dataset, source_label=dataset.source_label + " amended").content_hash
+        != dataset.content_hash
+    )
+    changed_entry = replace(dataset.entries[0], admin_code="01")
+    assert (
+        replace(dataset, entries=(changed_entry, *dataset.entries[1:])).content_hash
+        != dataset.content_hash
+    )
+    changed_alias = replace(dataset.aliases[0], alias="ha noi municipality")
+    assert (
+        replace(dataset, aliases=(changed_alias, *dataset.aliases[1:])).content_hash
+        != dataset.content_hash
+    )
+
+    with pytest.raises(TypeError):
+        AdministrativeFallbackDataset(  # type: ignore[call-arg]
+            market_id="spoof",
+            center_latitude=0,
+            center_longitude=0,
+            radius_km=1,
+            version="v1",
+            effective_date="2025-01-01",
+            admin_system_version="admin-v1",
+            source_label="source",
+            entries=(),
+            content_hash="0" * 64,
+        )
+
+
 def test_western_quang_ninh_coordinate_wins_but_province_only_is_unknown() -> None:
     service = GeofenceService(21.0285, 105.8542, 80)
     coordinate = service.evaluate(LocationEvidence(latitude=21.106, longitude=106.49))
@@ -206,6 +255,61 @@ def test_unknown_current_administrative_unit_is_unresolved() -> None:
     )
     assert result.inside is None
     assert result.reason == "fallback_unknown"
+
+
+@pytest.mark.parametrize("unit", ("Phuong Ba Dinh", "Xa Ba Dinh"))
+def test_current_unit_level_never_inherits_bare_legacy_district(unit: str) -> None:
+    result = GeofenceService(21.0285, 105.8542, 80).evaluate(
+        LocationEvidence(province="TP Ha Noi", district=unit)
+    )
+    assert result.inside is None
+    assert result.reason == "fallback_unknown"
+
+
+@pytest.mark.parametrize("unit", ("Ba Dinh", "Quan Ba Dinh", "Q Ba Dinh", "Huyen Ba Dinh"))
+def test_bare_quan_and_huyen_legacy_district_compatibility(unit: str) -> None:
+    result = GeofenceService(21.0285, 105.8542, 80).evaluate(
+        LocationEvidence(province="TP Ha Noi", district=unit)
+    )
+    assert result.inside is True
+    assert result.reason == "fallback_district_inside"
+
+
+def test_explicit_current_unit_alias_resolves_only_when_dataset_defines_target() -> None:
+    base = AdministrativeFallbackDataset.hanoi_80km()
+    dataset = replace(
+        base,
+        aliases=(
+            *base.aliases,
+            AdministrativeFallbackAlias("phuong", "phuong ba dinh", "ba dinh"),
+        ),
+    )
+    result = GeofenceService(21.0285, 105.8542, 80, fallback_dataset=dataset).evaluate(
+        LocationEvidence(province="TP Ha Noi", district="Phuong Ba Dinh")
+    )
+    assert result.inside is True
+
+
+def test_fallback_aliases_reject_dangling_and_ambiguous_targets() -> None:
+    base = AdministrativeFallbackDataset.hanoi_80km()
+    with pytest.raises(ValueError, match="alias target"):
+        replace(
+            base,
+            aliases=(AdministrativeFallbackAlias("phuong", "phuong moi", "missing"),),
+        )
+    with pytest.raises(ValueError, match="alias collision"):
+        replace(
+            base,
+            aliases=(
+                AdministrativeFallbackAlias("phuong", "phuong moi", "ba dinh"),
+                AdministrativeFallbackAlias("phuong", "phuong moi", "hoan kiem"),
+            ),
+        )
+    with pytest.raises(ValueError, match="alias collision"):
+        replace(
+            base,
+            aliases=(AdministrativeFallbackAlias("quan", "quan ba dinh", "hoan kiem"),),
+        )
 
 
 @pytest.mark.parametrize(

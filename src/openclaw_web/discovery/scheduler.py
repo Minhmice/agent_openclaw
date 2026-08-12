@@ -35,6 +35,18 @@ MONEY_SCORING_DIMENSIONS = (
     "business_strength",
     "web_gap",
 )
+BUSINESS_SCORING_DIMENSIONS = {
+    "manufacturer": frozenset({"operational_scale_weight", "technical_credibility_weight"}),
+    "professional-services": frozenset({"authority_weight", "case_study_weight"}),
+    "local-service": frozenset({"local_trust_weight", "response_speed_weight"}),
+    "showroom-retail": frozenset({"product_discovery_weight", "store_visit_weight"}),
+    "ecommerce": frozenset({"merchandising_weight", "checkout_clarity_weight"}),
+    "education": frozenset({"program_clarity_weight", "outcome_evidence_weight"}),
+    "healthcare": frozenset({"clinical_trust_weight", "care_access_weight"}),
+    "hospitality": frozenset({"experience_weight", "availability_weight"}),
+    "real-estate": frozenset({"listing_quality_weight", "agent_trust_weight"}),
+    "other": frozenset({"proposition_clarity_weight", "trust_weight"}),
+}
 COHORT_CONFIG_KEYS = frozenset(
     {
         "cohort_id",
@@ -269,22 +281,31 @@ def schedule_candidates(
         raise ValueError("rotation_offset must be nonnegative")
 
     canonical = [cohort for cohort in APPROVED_COHORTS if cohort in budgets]
-    if canonical:
-        offset = rotation_offset % len(canonical)
-        traversal = canonical[offset:] + canonical[:offset]
-    else:
-        traversal = []
     budget_total = sum(budgets.values())
     limit = budget_total if overall_cap is None else min(overall_cap, budget_total)
     buckets: dict[str, list[CohortCandidate]] = {cohort: [] for cohort in canonical}
-    queued_identities: set[str] = set()
+    queued_by_identity: dict[str, CohortCandidate] = {}
     for candidate in candidates:
-        if candidate.identity in queued_identities:
-            continue
         if candidate.cohort not in buckets:
             continue
-        queued_identities.add(candidate.identity)
+        existing = queued_by_identity.get(candidate.identity)
+        if existing is None or APPROVED_COHORTS.index(candidate.cohort) < APPROVED_COHORTS.index(
+            existing.cohort
+        ):
+            queued_by_identity[candidate.identity] = candidate
+    for candidate in queued_by_identity.values():
         buckets[candidate.cohort].append(candidate)
+    for bucket in buckets.values():
+        bucket.sort(key=lambda candidate: candidate.identity)
+
+    # Rotation state is interpreted over the actual eligible ring. Empty
+    # buckets and zero budgets consume no cursor position between windows.
+    eligible = [cohort for cohort in canonical if budgets[cohort] > 0 and buckets[cohort]]
+    if eligible:
+        offset = rotation_offset % len(eligible)
+        traversal = eligible[offset:] + eligible[:offset]
+    else:
+        traversal = []
 
     selected: list[CohortCandidate] = []
     used = {cohort: 0 for cohort in canonical}
@@ -317,6 +338,41 @@ class CohortConfig:
     conversion_intent_vocabulary: tuple[str, ...]
 
 
+class CohortConfigError(ValueError):
+    """Sanitized cohort contract error containing only the input filename."""
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):  # type: ignore[misc]
+    pass
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeySafeLoader, node: yaml.nodes.MappingNode, deep: bool = False
+) -> dict[object, object]:
+    loader.flatten_mapping(node)
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                None, None, "unhashable mapping key", key_node.start_mark
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                None, None, "duplicate mapping key", key_node.start_mark
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
 def _strict_string_list(value: object, *, field: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:
         raise ValueError(f"{field} must be a nonempty list")
@@ -338,7 +394,6 @@ def _strict_override_mapping(
     *,
     field: str,
     exact_keys: frozenset[str] | None = None,
-    key_pattern: re.Pattern[str] | None = None,
 ) -> Mapping[str, float]:
     if not isinstance(value, dict) or not value:
         raise ValueError(f"{field} must be a nonempty mapping")
@@ -350,8 +405,6 @@ def _strict_override_mapping(
         if not isinstance(key, str) or not key.strip():
             raise ValueError(f"{field} keys must be nonblank strings")
         normalized_key = _normalize(key)
-        if key_pattern is not None and key_pattern.fullmatch(key.strip()) is None:
-            raise ValueError(f"{field} keys must match {key_pattern.pattern}")
         if normalized_key in normalized_keys:
             raise ValueError(f"{field} keys must be unique after normalization")
         normalized_keys.add(normalized_key)
@@ -368,37 +421,48 @@ def _strict_override_mapping(
 
 def load_cohort_config(path: Path) -> CohortConfig:
     """Load and strictly validate a Task 5 cohort YAML contract."""
-
+    path = Path(path)
+    if (
+        path.suffix != ".yaml"
+        or path.name != f"{path.stem}.yaml"
+        or path.stem not in APPROVED_COHORTS
+    ):
+        raise CohortConfigError(f"invalid cohort filename: {path.name}")
     try:
-        payload: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise ValueError(f"invalid cohort YAML: {path.name}") from exc
-    if not isinstance(payload, dict) or set(payload) != COHORT_CONFIG_KEYS:
-        raise ValueError(f"cohort YAML must contain exactly {sorted(COHORT_CONFIG_KEYS)}")
-    cohort_id = payload["cohort_id"]
-    if cohort_id not in APPROVED_COHORTS or cohort_id != path.stem:
-        raise ValueError("cohort_id must be an approved cohort matching the filename")
-    if payload["version"] != "cohort-v1":
-        raise ValueError("unsupported cohort version")
-    return CohortConfig(
-        cohort_id=cohort_id,
-        version=payload["version"],
-        business_scoring_overrides=_strict_override_mapping(
-            payload["business_scoring_overrides"],
-            field="business_scoring_overrides",
-            key_pattern=re.compile(r"[a-z][a-z0-9_]*_weight"),
-        ),
-        money_scoring_overrides=_strict_override_mapping(
-            payload["money_scoring_overrides"],
-            field="money_scoring_overrides",
-            exact_keys=frozenset(MONEY_SCORING_DIMENSIONS),
-        ),
-        required_evidence_categories=_strict_string_list(
-            payload["required_evidence_categories"],
-            field="required_evidence_categories",
-        ),
-        conversion_intent_vocabulary=_strict_string_list(
-            payload["conversion_intent_vocabulary"],
-            field="conversion_intent_vocabulary",
-        ),
-    )
+        payload: Any = yaml.load(
+            path.read_text(encoding="utf-8"),
+            Loader=_UniqueKeySafeLoader,
+        )
+        if not isinstance(payload, dict) or set(payload) != COHORT_CONFIG_KEYS:
+            raise ValueError("invalid top-level keys")
+        cohort_id = payload["cohort_id"]
+        if cohort_id not in APPROVED_COHORTS or cohort_id != path.stem:
+            raise ValueError("cohort_id mismatch")
+        if payload["version"] != "cohort-v1":
+            raise ValueError("unsupported cohort version")
+        return CohortConfig(
+            cohort_id=cohort_id,
+            version=payload["version"],
+            business_scoring_overrides=_strict_override_mapping(
+                payload["business_scoring_overrides"],
+                field="business_scoring_overrides",
+                exact_keys=BUSINESS_SCORING_DIMENSIONS[cohort_id],
+            ),
+            money_scoring_overrides=_strict_override_mapping(
+                payload["money_scoring_overrides"],
+                field="money_scoring_overrides",
+                exact_keys=frozenset(MONEY_SCORING_DIMENSIONS),
+            ),
+            required_evidence_categories=_strict_string_list(
+                payload["required_evidence_categories"],
+                field="required_evidence_categories",
+            ),
+            conversion_intent_vocabulary=_strict_string_list(
+                payload["conversion_intent_vocabulary"],
+                field="conversion_intent_vocabulary",
+            ),
+        )
+    except (OSError, UnicodeError, yaml.YAMLError, TypeError, ValueError) as exc:
+        if isinstance(exc, CohortConfigError):
+            raise
+        raise CohortConfigError(f"invalid cohort config: {path.name}") from None
