@@ -53,14 +53,19 @@ _ADMIN_PREFIXES: tuple[tuple[str, str], ...] = (
 _ADMIN_LEVELS = frozenset({"province", "district", "bare", "quan", "huyen", "phuong", "xa"})
 
 
-def _parse_admin_unit(value: str, *, default_level: str) -> tuple[str, str]:
+def _parse_admin_unit_detail(value: str, *, default_level: str) -> tuple[str, str, bool]:
     normalized = _normalize_public_text(value, field=default_level)
     assert normalized is not None
     normalized = re.sub(r"[^a-z0-9]+", " ", normalized).strip()
     for prefix, level in _ADMIN_PREFIXES:
         if normalized.startswith(f"{prefix} "):
-            return level, normalized[len(prefix) + 1 :]
-    return default_level, normalized
+            return level, normalized[len(prefix) + 1 :], True
+    return default_level, normalized, False
+
+
+def _parse_admin_unit(value: str, *, default_level: str) -> tuple[str, str]:
+    level, name, _ = _parse_admin_unit_detail(value, default_level=default_level)
+    return level, name
 
 
 def _preserve_identifier(value: str | None, *, field: str) -> str | None:
@@ -177,12 +182,29 @@ class AdministrativeFallbackEntry:
         district = None
         inferred_level = "province"
         if self.district is not None:
-            inferred_level, district = _parse_admin_unit(self.district, default_level="district")
+            inferred_level, district, explicit_prefix = _parse_admin_unit_detail(
+                self.district, default_level="bare"
+            )
+        else:
+            explicit_prefix = False
         level = self.level or inferred_level
-        if level not in _ADMIN_LEVELS or level in {"bare", "province"} and district is not None:
+        if district is not None and not explicit_prefix and level == "bare":
+            raise ValueError(
+                "bare legacy fallback entry requires explicit district compatibility mapping"
+            )
+        if level not in _ADMIN_LEVELS - {"bare"} or level == "province" and district is not None:
             raise ValueError("invalid fallback entry level")
         if district is None and level != "province":
             raise ValueError("province fallback entry must use province level")
+        if district is not None:
+            if explicit_prefix and level != inferred_level:
+                raise ValueError("fallback entry prefix must match its level")
+            if not explicit_prefix and not (level == "district" and self.compatibility_alias):
+                raise ValueError(
+                    "bare legacy fallback entry requires explicit district compatibility mapping"
+                )
+        if self.compatibility_alias and level != "district":
+            raise ValueError("fallback entry compatibility alias must use district level")
         if not isinstance(self.inside, bool):
             raise TypeError("fallback entry inside must be boolean")
         if not isinstance(self.confidence, Confidence):
@@ -207,15 +229,16 @@ class AdministrativeFallbackAlias:
     admin_code: str | None = None
 
     def __post_init__(self) -> None:
-        if self.level not in _ADMIN_LEVELS - {"bare", "district"}:
+        if self.level not in _ADMIN_LEVELS - {"bare"}:
             raise ValueError("invalid fallback alias level")
         alias_level, alias = _parse_admin_unit(self.alias, default_level=self.level)
         if alias_level != self.level:
             raise ValueError("fallback alias prefix must match its level")
-        _, canonical_name = _parse_admin_unit(
-            self.canonical_name,
-            default_level="province" if self.level == "province" else "district",
+        canonical_level, canonical_name, canonical_prefix = _parse_admin_unit_detail(
+            self.canonical_name, default_level=self.level
         )
+        if canonical_prefix and canonical_level != self.level:
+            raise ValueError("fallback alias canonical name prefix must match its level")
         object.__setattr__(self, "alias", alias)
         object.__setattr__(self, "canonical_name", canonical_name)
         object.__setattr__(
@@ -254,9 +277,9 @@ class AdministrativeFallbackDataset:
         )
         radius = _nonnegative_finite(self.radius_km, field="fallback radius_km")
         assert latitude is not None and longitude is not None and radius is not None
-        object.__setattr__(self, "center_latitude", latitude)
-        object.__setattr__(self, "center_longitude", longitude)
-        object.__setattr__(self, "radius_km", radius)
+        object.__setattr__(self, "center_latitude", 0.0 if latitude == 0 else latitude)
+        object.__setattr__(self, "center_longitude", 0.0 if longitude == 0 else longitude)
+        object.__setattr__(self, "radius_km", 0.0 if radius == 0 else radius)
         for metadata_field in (
             "market_id",
             "version",
@@ -291,15 +314,13 @@ class AdministrativeFallbackDataset:
         candidates = tuple(
             entry
             for entry in self.entries
-            if (
-                entry.admin_code == alias.admin_code
-                if alias.admin_code is not None
-                else (
-                    entry.level == "province" and entry.province == alias.canonical_name
-                    if alias.level == "province"
-                    else entry.district == alias.canonical_name
-                )
+            if entry.level == alias.level
+            and (
+                entry.province == alias.canonical_name
+                if alias.level == "province"
+                else entry.district == alias.canonical_name
             )
+            and (alias.admin_code is None or entry.admin_code == alias.admin_code)
         )
         if len(candidates) != 1:
             raise ValueError("fallback alias target must identify exactly one entry")
@@ -311,7 +332,9 @@ class AdministrativeFallbackDataset:
             (level, entry.district)
             for entry in self.entries
             for level in (
-                {entry.level} if not entry.compatibility_alias else {"bare", "quan", "huyen"}
+                {entry.level}
+                if not entry.compatibility_alias
+                else {entry.level, "bare", "quan", "huyen"}
             )
             if entry.district is not None
         }
@@ -390,6 +413,7 @@ class AdministrativeFallbackDataset:
                     True,
                     Confidence.MEDIUM,
                     compatibility_alias=True,
+                    level="district",
                 )
                 for district in districts
             ),

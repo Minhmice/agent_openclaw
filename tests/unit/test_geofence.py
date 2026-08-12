@@ -151,7 +151,9 @@ def test_fallback_dataset_is_versioned_immutable_and_bound_to_market() -> None:
     assert dataset.content_hash
     with pytest.raises(AttributeError):
         dataset.entries += (  # type: ignore[misc]
-            AdministrativeFallbackEntry("ha noi", "fake", True, Confidence.MEDIUM),
+            AdministrativeFallbackEntry(
+                "ha noi", "quan fake", True, Confidence.MEDIUM, level="quan"
+            ),
         )
     copied = AdministrativeFallbackDataset(
         market_id=dataset.market_id,
@@ -223,6 +225,25 @@ def test_fallback_content_hash_covers_all_semantics_and_ignores_collection_order
         )
 
 
+def test_fallback_content_hash_canonicalizes_signed_zero_floats() -> None:
+    base = AdministrativeFallbackDataset(
+        market_id="zero",
+        center_latitude=0.0,
+        center_longitude=0.0,
+        radius_km=0.0,
+        version="v1",
+        effective_date="2025-01-01",
+        admin_system_version="admin-v1",
+        source_label="source",
+        entries=(AdministrativeFallbackEntry("ha noi", None, True, Confidence.MEDIUM),),
+    )
+    signed = replace(base, center_latitude=-0.0, center_longitude=-0.0, radius_km=-0.0)
+    nonzero = replace(base, center_longitude=0.001)
+
+    assert signed.content_hash == base.content_hash
+    assert nonzero.content_hash != base.content_hash
+
+
 def test_western_quang_ninh_coordinate_wins_but_province_only_is_unknown() -> None:
     service = GeofenceService(21.0285, 105.8542, 80)
     coordinate = service.evaluate(LocationEvidence(latitude=21.106, longitude=106.49))
@@ -277,17 +298,14 @@ def test_bare_quan_and_huyen_legacy_district_compatibility(unit: str) -> None:
 
 def test_explicit_current_unit_alias_resolves_only_when_dataset_defines_target() -> None:
     base = AdministrativeFallbackDataset.hanoi_80km()
-    dataset = replace(
-        base,
-        aliases=(
-            *base.aliases,
-            AdministrativeFallbackAlias("phuong", "phuong ba dinh", "ba dinh"),
-        ),
-    )
-    result = GeofenceService(21.0285, 105.8542, 80, fallback_dataset=dataset).evaluate(
-        LocationEvidence(province="TP Ha Noi", district="Phuong Ba Dinh")
-    )
-    assert result.inside is True
+    with pytest.raises(ValueError, match="alias target"):
+        replace(
+            base,
+            aliases=(
+                *base.aliases,
+                AdministrativeFallbackAlias("phuong", "phuong ba dinh", "ba dinh"),
+            ),
+        )
 
 
 def test_fallback_aliases_reject_dangling_and_ambiguous_targets() -> None:
@@ -301,15 +319,72 @@ def test_fallback_aliases_reject_dangling_and_ambiguous_targets() -> None:
         replace(
             base,
             aliases=(
-                AdministrativeFallbackAlias("phuong", "phuong moi", "ba dinh"),
-                AdministrativeFallbackAlias("phuong", "phuong moi", "hoan kiem"),
+                AdministrativeFallbackAlias("district", "thi xa moi", "ba dinh"),
+                AdministrativeFallbackAlias("district", "thi xa moi", "hoan kiem"),
             ),
         )
     with pytest.raises(ValueError, match="alias collision"):
         replace(
             base,
-            aliases=(AdministrativeFallbackAlias("quan", "quan ba dinh", "hoan kiem"),),
+            aliases=(AdministrativeFallbackAlias("district", "thi xa ba dinh", "hoan kiem"),),
         )
+
+
+def test_fallback_entry_rejects_explicit_prefix_level_spoof() -> None:
+    with pytest.raises(ValueError, match="level"):
+        AdministrativeFallbackEntry(
+            "ha noi", "phuong ba dinh", True, Confidence.MEDIUM, level="district"
+        )
+    with pytest.raises(ValueError, match="level"):
+        AdministrativeFallbackEntry(
+            "ha noi", "quan ba dinh", True, Confidence.MEDIUM, level="phuong"
+        )
+
+
+def test_bare_legacy_entry_requires_explicit_compatibility_mapping() -> None:
+    with pytest.raises(ValueError, match="bare legacy"):
+        AdministrativeFallbackEntry("ha noi", "ba dinh", True, Confidence.MEDIUM)
+    entry = AdministrativeFallbackEntry(
+        "ha noi",
+        "ba dinh",
+        True,
+        Confidence.MEDIUM,
+        compatibility_alias=True,
+        level="district",
+    )
+    assert entry.level == "district"
+
+
+def test_fallback_alias_target_requires_matching_level_name_and_code() -> None:
+    base = AdministrativeFallbackDataset.hanoi_80km()
+    coded = replace(base.entries[1], admin_code="legacy-001")
+    entries = (base.entries[0], coded, *base.entries[2:])
+
+    with pytest.raises(ValueError, match="alias target"):
+        replace(
+            base,
+            entries=entries,
+            aliases=(
+                AdministrativeFallbackAlias(
+                    "phuong", "phuong moi", coded.district or "", admin_code="legacy-001"
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="alias target"):
+        replace(
+            base,
+            entries=entries,
+            aliases=(
+                AdministrativeFallbackAlias(
+                    "quan", "quan moi", "hoan kiem", admin_code="legacy-001"
+                ),
+            ),
+        )
+
+
+def test_fallback_alias_rejects_canonical_name_level_spoof() -> None:
+    with pytest.raises(ValueError, match="canonical name"):
+        AdministrativeFallbackAlias("phuong", "phuong moi", "quan ba dinh")
 
 
 @pytest.mark.parametrize(

@@ -8,10 +8,12 @@ from openclaw_web.discovery.scheduler import (
     APPROVED_COHORTS,
     CohortCandidate,
     CohortConfigError,
+    SchedulerCursor,
     allocate_cohort_budget,
     assign_cohort,
     load_cohort_config,
     schedule_candidates,
+    schedule_candidates_detailed,
 )
 from openclaw_web.models import ClaimStatus
 
@@ -287,7 +289,7 @@ def test_sparse_scheduler_rotates_only_across_eligible_nonempty_cohorts() -> Non
     ] == ["manufacturer", "other", "manufacturer", "other"]
     assert schedule_candidates(candidates, budgets, overall_cap=3, rotation_offset=1) == [
         CohortCandidate("o1", "other"),
-        CohortCandidate("m1", "manufacturer"),
+        CohortCandidate("m2", "manufacturer"),
         CohortCandidate("o2", "other"),
     ]
     assert schedule_candidates(candidates, budgets, overall_cap=3) == schedule_candidates(
@@ -295,6 +297,52 @@ def test_sparse_scheduler_rotates_only_across_eligible_nonempty_cohorts() -> Non
         dict(reversed(tuple(budgets.items()))),
         overall_cap=3,
     )
+
+
+def test_rotation_offset_advances_candidate_slots_within_one_cohort() -> None:
+    candidates = [CohortCandidate(identity, "manufacturer") for identity in ("a", "b", "c")]
+    assert [
+        schedule_candidates(
+            candidates,
+            {"manufacturer": 1},
+            overall_cap=1,
+            rotation_offset=offset,
+        )[0].identity
+        for offset in range(6)
+    ] == ["a", "b", "c", "a", "b", "c"]
+
+
+def test_persisted_scheduler_cursor_survives_changing_eligible_cohorts() -> None:
+    cursor = SchedulerCursor()
+    first = schedule_candidates_detailed(
+        [CohortCandidate("m-a", "manufacturer"), CohortCandidate("m-b", "manufacturer")],
+        {"manufacturer": 1, "ecommerce": 1},
+        overall_cap=1,
+        cursor=cursor,
+    )
+    second = schedule_candidates_detailed(
+        [CohortCandidate("e-a", "ecommerce")],
+        {"manufacturer": 1, "ecommerce": 1},
+        overall_cap=1,
+        cursor=first.next_cursor,
+    )
+    third = schedule_candidates_detailed(
+        [CohortCandidate("m-a", "manufacturer"), CohortCandidate("m-b", "manufacturer")],
+        {"manufacturer": 1, "ecommerce": 1},
+        overall_cap=1,
+        cursor=second.next_cursor,
+    )
+
+    assert [
+        first.selected[0].identity,
+        second.selected[0].identity,
+        third.selected[0].identity,
+    ] == [
+        "m-a",
+        "e-a",
+        "m-b",
+    ]
+    assert first.next_cursor != cursor
 
 
 def test_all_cohort_yaml_contracts_are_strict_and_complete() -> None:

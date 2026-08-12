@@ -238,6 +238,35 @@ class CohortCandidate:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SchedulerCursor:
+    """Stable cross-window position in the canonical cohort/candidate universe."""
+
+    cohort_index: int = 0
+    candidate_offsets: tuple[int, ...] = (0,) * len(APPROVED_COHORTS)
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.cohort_index, bool)
+            or not isinstance(self.cohort_index, int)
+            or not 0 <= self.cohort_index < len(APPROVED_COHORTS)
+        ):
+            raise ValueError("cursor cohort_index is invalid")
+        if len(self.candidate_offsets) != len(APPROVED_COHORTS) or any(
+            isinstance(offset, bool) or not isinstance(offset, int) or offset < 0
+            for offset in self.candidate_offsets
+        ):
+            raise ValueError("cursor candidate_offsets are invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulerResult:
+    """Selected candidates and the immutable cursor to persist for the next window."""
+
+    selected: tuple[CohortCandidate, ...]
+    next_cursor: SchedulerCursor
+
+
 def _validate_budget(budget_by_cohort: Mapping[str, int]) -> dict[str, int]:
     result: dict[str, int] = {}
     for raw_cohort, budget in budget_by_cohort.items():
@@ -256,38 +285,12 @@ def _validate_budget(budget_by_cohort: Mapping[str, int]) -> dict[str, int]:
     return result
 
 
-def schedule_candidates(
+def _candidate_buckets(
     candidates: Iterable[CohortCandidate],
-    budget_by_cohort: Mapping[str, int],
-    *,
-    overall_cap: int | None = None,
-    rotation_offset: int = 0,
-) -> list[CohortCandidate]:
-    """Select by canonical round-robin, rotated per persisted schedule window.
-
-    Callers using an overall cap must persist or deterministically derive
-    ``rotation_offset`` for each schedule window to prevent cross-run starvation.
-    """
-
-    budgets = _validate_budget(budget_by_cohort)
-    if overall_cap is not None:
-        if isinstance(overall_cap, bool) or not isinstance(overall_cap, int):
-            raise TypeError("overall_cap must be an integer")
-        if overall_cap < 0:
-            raise ValueError("overall_cap must be nonnegative")
-    if isinstance(rotation_offset, bool) or not isinstance(rotation_offset, int):
-        raise TypeError("rotation_offset must be an integer")
-    if rotation_offset < 0:
-        raise ValueError("rotation_offset must be nonnegative")
-
-    canonical = [cohort for cohort in APPROVED_COHORTS if cohort in budgets]
-    budget_total = sum(budgets.values())
-    limit = budget_total if overall_cap is None else min(overall_cap, budget_total)
-    buckets: dict[str, list[CohortCandidate]] = {cohort: [] for cohort in canonical}
+) -> dict[str, list[CohortCandidate]]:
+    buckets: dict[str, list[CohortCandidate]] = {cohort: [] for cohort in APPROVED_COHORTS}
     queued_by_identity: dict[str, CohortCandidate] = {}
     for candidate in candidates:
-        if candidate.cohort not in buckets:
-            continue
         existing = queued_by_identity.get(candidate.identity)
         if existing is None or APPROVED_COHORTS.index(candidate.cohort) < APPROVED_COHORTS.index(
             existing.cohort
@@ -297,33 +300,133 @@ def schedule_candidates(
         buckets[candidate.cohort].append(candidate)
     for bucket in buckets.values():
         bucket.sort(key=lambda candidate: candidate.identity)
+    return buckets
 
-    # Rotation state is interpreted over the actual eligible ring. Empty
-    # buckets and zero budgets consume no cursor position between windows.
-    eligible = [cohort for cohort in canonical if budgets[cohort] > 0 and buckets[cohort]]
-    if eligible:
-        offset = rotation_offset % len(eligible)
-        traversal = eligible[offset:] + eligible[:offset]
-    else:
-        traversal = []
 
+def _validate_cap(overall_cap: int | None) -> None:
+    if overall_cap is not None:
+        if isinstance(overall_cap, bool) or not isinstance(overall_cap, int):
+            raise TypeError("overall_cap must be an integer")
+        if overall_cap < 0:
+            raise ValueError("overall_cap must be nonnegative")
+
+
+def _cursor_after_offset(
+    cursor: SchedulerCursor,
+    buckets: Mapping[str, Sequence[CohortCandidate]],
+    budgets: Mapping[str, int],
+    rotation_offset: int,
+) -> SchedulerCursor:
+    """Advance a compatibility offset over candidate slots, without consuming a run budget."""
+
+    if isinstance(rotation_offset, bool) or not isinstance(rotation_offset, int):
+        raise TypeError("rotation_offset must be an integer")
+    if rotation_offset < 0:
+        raise ValueError("rotation_offset must be nonnegative")
+    eligible = tuple(
+        index
+        for index, cohort in enumerate(APPROVED_COHORTS)
+        if budgets.get(cohort, 0) > 0 and buckets[cohort]
+    )
+    if not eligible or rotation_offset == 0:
+        return cursor
+
+    traversal = tuple(index for index in eligible if index >= cursor.cohort_index) + tuple(
+        index for index in eligible if index < cursor.cohort_index
+    )
+    rounds, remainder = divmod(rotation_offset, len(traversal))
+    offsets = list(cursor.candidate_offsets)
+    for index in traversal:
+        offsets[index] += rounds
+    for index in traversal[:remainder]:
+        offsets[index] += 1
+    last_index = traversal[remainder - 1] if remainder else traversal[-1]
+    return SchedulerCursor((last_index + 1) % len(APPROVED_COHORTS), tuple(offsets))
+
+
+def schedule_candidates_detailed(
+    candidates: Iterable[CohortCandidate],
+    budget_by_cohort: Mapping[str, int],
+    *,
+    overall_cap: int | None = None,
+    cursor: SchedulerCursor | None = None,
+) -> SchedulerResult:
+    """Select fairly and return stable state for a later, possibly different candidate set.
+
+    The canonical cohort index advances only when a slot is selected. Each cohort's
+    candidate offset is retained while that cohort is absent. Persist ``next_cursor``
+    when candidate eligibility may change between windows.
+    """
+
+    budgets = _validate_budget(budget_by_cohort)
+    _validate_cap(overall_cap)
+    if cursor is None:
+        cursor = SchedulerCursor()
+    if not isinstance(cursor, SchedulerCursor):
+        raise TypeError("cursor must be SchedulerCursor")
+
+    budget_total = sum(budgets.values())
+    limit = budget_total if overall_cap is None else min(overall_cap, budget_total)
+    buckets = _candidate_buckets(candidates)
     selected: list[CohortCandidate] = []
-    used = {cohort: 0 for cohort in canonical}
-    offsets = {cohort: 0 for cohort in canonical}
+    selected_identities: set[str] = set()
+    used = dict.fromkeys(APPROVED_COHORTS, 0)
+    offsets = list(cursor.candidate_offsets)
+    cohort_index = cursor.cohort_index
     while len(selected) < limit:
-        progressed = False
-        for cohort in traversal:
-            if len(selected) >= limit:
-                break
-            if used[cohort] >= budgets[cohort] or offsets[cohort] >= len(buckets[cohort]):
+        chosen_index: int | None = None
+        chosen: CohortCandidate | None = None
+        for distance in range(len(APPROVED_COHORTS)):
+            index = (cohort_index + distance) % len(APPROVED_COHORTS)
+            cohort = APPROVED_COHORTS[index]
+            bucket = buckets[cohort]
+            if used[cohort] >= budgets.get(cohort, 0) or not bucket:
                 continue
-            selected.append(buckets[cohort][offsets[cohort]])
-            offsets[cohort] += 1
-            used[cohort] += 1
-            progressed = True
-        if not progressed:
+            for candidate_distance in range(len(bucket)):
+                candidate = bucket[(offsets[index] + candidate_distance) % len(bucket)]
+                if candidate.identity not in selected_identities:
+                    offsets[index] += candidate_distance + 1
+                    chosen_index = index
+                    chosen = candidate
+                    break
+            if chosen is not None:
+                break
+        if chosen_index is None or chosen is None:
             break
-    return selected
+        selected.append(chosen)
+        selected_identities.add(chosen.identity)
+        used[APPROVED_COHORTS[chosen_index]] += 1
+        cohort_index = (chosen_index + 1) % len(APPROVED_COHORTS)
+    return SchedulerResult(tuple(selected), SchedulerCursor(cohort_index, tuple(offsets)))
+
+
+def schedule_candidates(
+    candidates: Iterable[CohortCandidate],
+    budget_by_cohort: Mapping[str, int],
+    *,
+    overall_cap: int | None = None,
+    rotation_offset: int = 0,
+) -> list[CohortCandidate]:
+    """Compatibility API using a stateless offset over deterministic candidate slots.
+
+    Persist the cursor from :func:`schedule_candidates_detailed` instead when the
+    eligible candidate set can change between windows; no integer offset can encode
+    per-cohort progress across arbitrary changing sets.
+    """
+
+    budgets = _validate_budget(budget_by_cohort)
+    _validate_cap(overall_cap)
+    buckets = _candidate_buckets(candidates)
+    cursor = _cursor_after_offset(SchedulerCursor(), buckets, budgets, rotation_offset)
+    flattened = (candidate for bucket in buckets.values() for candidate in bucket)
+    return list(
+        schedule_candidates_detailed(
+            flattened,
+            budgets,
+            overall_cap=overall_cap,
+            cursor=cursor,
+        ).selected
+    )
 
 
 @dataclass(frozen=True, slots=True)
