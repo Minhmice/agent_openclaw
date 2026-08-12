@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
-from openclaw_web.crawl.robots import RobotsPolicy
+from openclaw_web.crawl import robots as robots_module
+from openclaw_web.crawl.robots import MAX_CRAWL_DELAY, RobotsPolicy
 from openclaw_web.crawl.safety import UnsafeTarget
 
 
@@ -225,7 +230,7 @@ def test_group_boundaries_and_global_metadata_apply_to_access_rules() -> None:
     assert not policy.allowed("SecondBot", "https://example.com/shared")
     assert policy.allowed("ThirdBot", "https://example.com/shared")
     assert not policy.allowed("ThirdBot", "https://example.com/third")
-    assert policy.allowed("FourthBot", "https://example.com/fifth")
+    assert not policy.allowed("FourthBot", "https://example.com/fifth")
     assert not policy.allowed("FifthBot", "https://example.com/fifth")
 
 
@@ -234,6 +239,7 @@ def test_crawl_delay_prefers_specific_agent_and_accepts_fraction() -> None:
         """
         User-agent: *
         Crawl-delay: 7
+        Disallow: /fallback
 
         User-agent: AgentOpenClawAudit
         Crawl-delay: 0.25
@@ -249,12 +255,14 @@ def test_crawl_delay_uses_the_same_most_specific_merged_groups() -> None:
         """
         User-agent: Audit
         Crawl-delay: 9
+        Disallow: /audit-only
 
         User-agent: AuditBot
         Disallow: /private
 
         User-agent: auditbot
         Crawl-delay: 0.75
+        Allow: /
 
         User-agent: *
         Crawl-delay: 4
@@ -280,13 +288,32 @@ def test_crawl_delay_group_ignores_comment_only_and_inline_comments() -> None:
     assert policy.crawl_delay("SecondBot/1.0") == 1.5
 
 
-def test_physical_blank_line_ends_crawl_delay_group() -> None:
-    """A physical blank line separates groups, even before any rule record."""
+def test_physical_blank_line_does_not_end_group_before_an_access_rule() -> None:
+    """Blank lines are insignificant until access-rule grammar starts a new group."""
 
     policy = RobotsPolicy.parse("User-agent: FirstBot\n\nUser-agent: SecondBot\nCrawl-delay: 2\n")
 
-    assert policy.crawl_delay("FirstBot/1.0") is None
+    assert policy.crawl_delay("FirstBot/1.0") == 2
     assert policy.crawl_delay("SecondBot/1.0") == 2
+
+
+def test_extensions_do_not_split_or_start_access_rule_groups() -> None:
+    policy = RobotsPolicy.parse(
+        """
+        User-agent: FirstBot
+        Crawl-delay: 1.5
+        Request-rate: 1/10
+        Clean-param: ref /catalog
+
+        User-agent: SecondBot
+        Disallow: /shared
+        """
+    )
+
+    assert not policy.allowed("FirstBot/1.0", "https://example.com/shared")
+    assert not policy.allowed("SecondBot/1.0", "https://example.com/shared")
+    assert policy.crawl_delay("FirstBot/1.0") == 1.5
+    assert policy.crawl_delay("SecondBot/1.0") == 1.5
 
 
 def test_global_directives_do_not_split_consecutive_user_agents() -> None:
@@ -330,13 +357,63 @@ def test_invalid_crawl_delay_is_ignored_with_wildcard_fallback(invalid: str) -> 
 
 def test_unavailable_policy_allows_with_conservative_delay_and_sanitized_error() -> None:
     policy = RobotsPolicy.unavailable(
-        RuntimeError("token=secret https://example.com/robots.txt"), default_delay=5
+        RuntimeError("token=secret https://example.com/robots.txt"),
+        origin="https://example.com/robots.txt",
+        default_delay=5,
     )
 
     assert policy.allowed("AgentOpenClawAudit/1.0", "https://example.com/private")
     assert policy.crawl_delay("AgentOpenClawAudit/1.0") == 5
     assert policy.fetch_error == "robots policy unavailable"
+    assert policy.fetch_outcome.value == "http_unavailable"
     assert not policy.homepage_blocked("AgentOpenClawAudit/1.0", "https://example.com/")
+    with pytest.raises(UnsafeTarget, match="origin"):
+        policy.allowed("AgentOpenClawAudit/1.0", "https://other.example.com/")
+
+
+@pytest.mark.parametrize(
+    "invalid_delay",
+    ["5", True, None, math.nan, math.inf, 0, -1, MAX_CRAWL_DELAY + 1],
+)
+def test_unavailable_policy_validates_fallback_delay_type_and_range(
+    invalid_delay: object,
+) -> None:
+    policy = RobotsPolicy.unavailable(
+        RuntimeError("secret"),
+        origin="https://example.com/robots.txt",
+        default_delay=invalid_delay,
+    )
+
+    assert policy.crawl_delay("Bot") == 5
+
+
+def test_unreachable_policy_fails_closed_and_sanitizes_error() -> None:
+    policy = RobotsPolicy.unreachable(
+        RuntimeError("token=secret https://example.com/robots.txt"),
+        origin="https://example.com/robots.txt",
+    )
+
+    assert not policy.allowed("Bot", "https://example.com/public")
+    assert policy.fetch_error == "robots policy unreachable"
+    assert policy.fetch_outcome.value == "unreachable"
+    assert policy.homepage_blocked("Bot", "https://example.com/")
+    with pytest.raises(UnsafeTarget, match="origin"):
+        policy.homepage_blocked("Bot", "https://other.example.com/")
+
+
+def test_unreachable_policy_can_use_a_same_origin_loaded_cache() -> None:
+    cached = RobotsPolicy.parse(
+        "User-agent: *\nDisallow: /private\n", origin="https://example.com/"
+    )
+
+    policy = RobotsPolicy.unreachable(
+        RuntimeError("secret"),
+        origin="https://example.com/robots.txt",
+        cached_policy=cached,
+    )
+
+    assert not policy.allowed("Bot", "https://example.com/private")
+    assert policy.allowed("Bot", "https://example.com/public")
 
 
 def test_explicit_homepage_disallow_is_terminal() -> None:
@@ -356,6 +433,39 @@ def test_origin_and_absolute_url_are_validated() -> None:
         policy.allowed("Bot", "/relative")
 
 
+def test_unscoped_policy_binds_to_first_origin_and_rejects_reuse() -> None:
+    policy = RobotsPolicy.parse("User-agent: *\nDisallow: /private\n")
+
+    assert not policy.allowed("Bot", "https://example.com/private")
+    with pytest.raises(UnsafeTarget, match="origin"):
+        policy.allowed("Bot", "https://other.example.com/private")
+    with pytest.raises(UnsafeTarget, match="origin"):
+        policy.homepage_allowed("Bot", "https://other.example.com/")
+
+
+def test_unscoped_policy_origin_binding_is_thread_safe() -> None:
+    policy = RobotsPolicy.parse("User-agent: *\nDisallow:\n")
+    barrier = threading.Barrier(2)
+
+    def use_origin(url: str) -> object:
+        barrier.wait()
+        try:
+            return policy.allowed("Bot", url)
+        except UnsafeTarget as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                use_origin,
+                ["https://first.example.com/", "https://second.example.com/"],
+            )
+        )
+
+    assert sum(result is True for result in results) == 1
+    assert sum(isinstance(result, UnsafeTarget) for result in results) == 1
+
+
 def test_empty_malformed_and_oversized_policies_are_deterministic() -> None:
     assert RobotsPolicy.parse("").allowed("Bot", "https://example.com/")
     assert RobotsPolicy.parse("not a directive\n:\n").allowed("Bot", "https://example.com/")
@@ -364,7 +474,58 @@ def test_empty_malformed_and_oversized_policies_are_deterministic() -> None:
 
 
 def test_match_input_is_bounded_by_the_policy_size_limit() -> None:
-    policy = RobotsPolicy.parse("", max_bytes=32)
+    policy = RobotsPolicy.parse("", max_bytes=0)
 
-    with pytest.raises(UnsafeTarget, match="maximum size"):
-        policy.allowed("Bot", f"https://example.com/{'x' * 33}")
+    assert policy.allowed("Bot", f"https://example.com/{'x' * 100}")
+
+    with pytest.raises(UnsafeTarget, match="match URL"):
+        policy.allowed("Bot", f"https://example.com/{'x' * (16 * 1024)}")
+
+
+def test_bare_empty_query_delimiter_participates_in_robots_matching() -> None:
+    policy = RobotsPolicy.parse(
+        "User-agent: *\nDisallow: /search?\n", origin="https://example.com/"
+    )
+
+    assert policy.allowed("Bot", "https://example.com/search")
+    assert not policy.allowed("Bot", "https://example.com/search?")
+
+
+@pytest.mark.parametrize(
+    ("malformed_product", "request_agent"),
+    [
+        ("Bad Bot", "Bad Bot"),
+        ("Bad/Bot", "Bad/Bot"),
+        ("Bot2", "Bot2"),
+        ("B\N{LATIN SMALL LETTER O WITH DIAERESIS}t", "B\N{LATIN SMALL LETTER O WITH DIAERESIS}t"),
+        ("Bad*Bot", "Bad*Bot"),
+    ],
+)
+def test_malformed_user_agent_product_tokens_cannot_outscore_wildcard(
+    malformed_product: str, request_agent: str
+) -> None:
+    policy = RobotsPolicy.parse(
+        f"User-agent: {malformed_product}\nDisallow: /\nUser-agent: *\nAllow: /\n"
+    )
+
+    assert policy.allowed(request_agent, "https://example.com/public")
+
+
+def test_large_policy_rule_matching_stops_at_deterministic_work_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "User-agent: *\n" + "".join(f"Disallow: /{index:05x}\n" for index in range(30_000))
+    assert 480 * 1024 < len(text.encode("utf-8")) < 512 * 1024
+    policy = RobotsPolicy.parse(text)
+    calls = 0
+    original_matches = robots_module._Rule.matches
+
+    def counting_matches(rule: object, value: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return original_matches(rule, value)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(robots_module._Rule, "matches", counting_matches)
+
+    assert not policy.allowed("Bot", "https://example.com/not-listed")
+    assert calls <= 10_000

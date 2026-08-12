@@ -1,11 +1,12 @@
 """Safe crawl-boundary primitives.
 
-Network adapters must validate every navigation and redirect with this package before
-sending a request. DNS validation reduces SSRF risk, but is not socket pinning: clients
-must eventually connect to a validated address or revalidate the connected peer.
+Automatic redirects are forbidden. Network adapters must validate every navigation and
+redirect before manually issuing it, use the returned canonical URL exactly, and either
+connect to a validated address or revalidate the connected peer. DNS validation alone
+does not provide socket pinning.
 """
 
-from openclaw_web.crawl.robots import RobotsPolicy
+from openclaw_web.crawl.robots import RobotsFetchOutcome, RobotsPolicy
 from openclaw_web.crawl.safety import (
     Resolver,
     UnsafeTarget,
@@ -18,6 +19,7 @@ from openclaw_web.crawl.safety import (
 
 __all__ = [
     "Resolver",
+    "RobotsFetchOutcome",
     "RobotsPolicy",
     "UnsafeTarget",
     "normalize_url",

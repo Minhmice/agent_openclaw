@@ -1,21 +1,39 @@
-"""Bounded, deterministic robots.txt policy handling."""
+"""Bounded, deterministic robots.txt policy handling.
+
+Fetch adapters must enforce the robots response byte limit while streaming; the parser
+cap is a second line of defense. The RFC-compatible default accepts at least 500 KiB.
+Deployments may choose a smaller custom cap only as an explicitly conservative policy.
+"""
 
 from __future__ import annotations
 
 import math
 import re
 from dataclasses import dataclass
+from enum import Enum
+from threading import Lock
 from urllib.parse import urlsplit, urlunsplit
 
 from openclaw_web.crawl.safety import UnsafeTarget, normalize_url
 
 DEFAULT_MAX_BYTES = 512 * 1024
+DEFAULT_MAX_MATCH_URL_BYTES = 16 * 1024
+DEFAULT_MAX_RULE_MATCH_OPERATIONS = 10_000
 DEFAULT_UNAVAILABLE_DELAY = 5.0
 MAX_CRAWL_DELAY = 86_400.0
 _GROUP_RULE_DIRECTIVES = frozenset({"allow", "crawl-delay", "disallow", "request-rate"})
 _GLOBAL_DIRECTIVES = frozenset({"host", "sitemap"})
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 _ASCII_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+_USER_AGENT_PRODUCT = re.compile(r"(?:\*|[A-Za-z_-]+)\Z", re.ASCII)
+
+
+class RobotsFetchOutcome(Enum):
+    """How fetching robots.txt concluded."""
+
+    LOADED = "loaded"
+    HTTP_UNAVAILABLE = "http_unavailable"
+    UNREACHABLE = "unreachable"
 
 
 def _canonical_match_text(value: str, *, rule_pattern: bool) -> str:
@@ -148,11 +166,20 @@ class _Group:
 def _valid_delay(raw_value: str) -> float | None:
     try:
         value = float(raw_value)
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     if not math.isfinite(value) or value <= 0 or value > MAX_CRAWL_DELAY:
         return None
     return value
+
+
+def _fallback_delay(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return DEFAULT_UNAVAILABLE_DELAY
+    delay = float(value)
+    if not math.isfinite(delay) or delay <= 0 or delay > MAX_CRAWL_DELAY:
+        return DEFAULT_UNAVAILABLE_DELAY
+    return delay
 
 
 def _parse_groups(text: str) -> tuple[_Group, ...]:
@@ -160,23 +187,18 @@ def _parse_groups(text: str) -> tuple[_Group, ...]:
     agents: list[str] = []
     rules: list[_Rule] = []
     delay: float | None = None
-    rules_started = False
+    access_rules_started = False
 
     def finish_group() -> None:
-        nonlocal agents, rules, delay, rules_started
+        nonlocal agents, rules, delay, access_rules_started
         if agents:
             groups.append(_Group(tuple(agents), tuple(rules), delay))
         agents = []
         rules = []
         delay = None
-        rules_started = False
+        access_rules_started = False
 
     for raw_line in text.splitlines():
-        # A physical blank line ends a group. A comment-only line does not.
-        if not raw_line.strip():
-            if agents:
-                finish_group()
-            continue
         line = raw_line.split("#", 1)[0].strip()
         if not line or ":" not in line:
             continue
@@ -184,8 +206,8 @@ def _parse_groups(text: str) -> tuple[_Group, ...]:
         directive = directive.strip().casefold()
         value = raw_value.strip()
         if directive == "user-agent":
-            if value:
-                if agents and rules_started:
+            if _USER_AGENT_PRODUCT.fullmatch(value) is not None:
+                if agents and access_rules_started:
                     finish_group()
                 agents.append(value.casefold())
             continue
@@ -193,12 +215,12 @@ def _parse_groups(text: str) -> tuple[_Group, ...]:
             continue
         if directive not in _GROUP_RULE_DIRECTIVES or not agents:
             continue
-        rules_started = True
         if directive == "crawl-delay" and delay is None:
             delay = _valid_delay(value)
         elif directive in {"allow", "disallow"}:
             rule = _Rule.parse(allow=directive == "allow", raw_pattern=value)
             if rule is not None:
+                access_rules_started = True
                 rules.append(rule)
     if agents:
         finish_group()
@@ -210,9 +232,13 @@ class RobotsPolicy:
 
     __slots__ = (
         "_explicit",
+        "_fetch_outcome",
         "_groups",
         "_max_bytes",
+        "_max_match_url_bytes",
+        "_max_rule_operations",
         "_origin",
+        "_origin_lock",
         "_unavailable_delay",
         "fetch_error",
     )
@@ -223,16 +249,29 @@ class RobotsPolicy:
         *,
         origin: str | None,
         explicit: bool,
+        fetch_outcome: RobotsFetchOutcome,
         max_bytes: int | None,
+        max_match_url_bytes: int,
+        max_rule_operations: int,
         unavailable_delay: float | None,
         fetch_error: str | None,
     ) -> None:
         self._groups = groups
         self._origin = origin
+        self._origin_lock = Lock()
         self._explicit = explicit
+        self._fetch_outcome = fetch_outcome
         self._max_bytes = max_bytes
+        self._max_match_url_bytes = max_match_url_bytes
+        self._max_rule_operations = max_rule_operations
         self._unavailable_delay = unavailable_delay
         self.fetch_error = fetch_error
+
+    @property
+    def fetch_outcome(self) -> RobotsFetchOutcome:
+        """Return the sanitized robots fetch classification."""
+
+        return self._fetch_outcome
 
     @classmethod
     def parse(
@@ -241,40 +280,91 @@ class RobotsPolicy:
         *,
         origin: str | None = None,
         max_bytes: int = DEFAULT_MAX_BYTES,
+        max_match_url_bytes: int = DEFAULT_MAX_MATCH_URL_BYTES,
+        max_rule_operations: int = DEFAULT_MAX_RULE_MATCH_OPERATIONS,
     ) -> RobotsPolicy:
-        """Parse a bounded robots response."""
+        """Parse a bounded robots response.
+
+        Production fetchers should pass ``origin``. Omitting it is a seed-compatibility
+        path: the first URL decision binds the policy to that origin under a lock, and
+        every later cross-origin use is rejected.
+        """
 
         if max_bytes < 0 or len(text.encode("utf-8")) > max_bytes:
             raise ValueError("robots policy exceeds maximum size")
+        if max_match_url_bytes <= 0:
+            raise ValueError("robots match URL maximum must be positive")
+        if max_rule_operations <= 0:
+            raise ValueError("robots rule operation maximum must be positive")
         normalized_origin = cls._normalize_origin(origin) if origin is not None else None
         return cls(
             _parse_groups(text),
             origin=normalized_origin,
             explicit=True,
+            fetch_outcome=RobotsFetchOutcome.LOADED,
             max_bytes=max_bytes,
+            max_match_url_bytes=max_match_url_bytes,
+            max_rule_operations=max_rule_operations,
             unavailable_delay=None,
             fetch_error=None,
         )
 
     @classmethod
     def unavailable(
-        cls, fetch_error: object, *, default_delay: float = DEFAULT_UNAVAILABLE_DELAY
+        cls,
+        fetch_error: object,
+        *,
+        origin: str | None = None,
+        default_delay: object = DEFAULT_UNAVAILABLE_DELAY,
     ) -> RobotsPolicy:
-        """Create an allow-with-conservative-delay policy for a failed robots fetch."""
+        """Create allow-with-delay policy for an explicit HTTP-unavailable response.
+
+        This constructor represents responses such as HTTP 4xx, not opaque network or
+        server failures. Use :meth:`unreachable` for those failures.
+        """
 
         del fetch_error
-        delay = (
-            default_delay
-            if math.isfinite(default_delay) and default_delay > 0
-            else DEFAULT_UNAVAILABLE_DELAY
-        )
+        normalized_origin = cls._normalize_origin(origin) if origin is not None else None
         return cls(
             (),
-            origin=None,
+            origin=normalized_origin,
             explicit=False,
+            fetch_outcome=RobotsFetchOutcome.HTTP_UNAVAILABLE,
             max_bytes=None,
-            unavailable_delay=delay,
+            max_match_url_bytes=DEFAULT_MAX_MATCH_URL_BYTES,
+            max_rule_operations=DEFAULT_MAX_RULE_MATCH_OPERATIONS,
+            unavailable_delay=_fallback_delay(default_delay),
             fetch_error="robots policy unavailable",
+        )
+
+    @classmethod
+    def unreachable(
+        cls,
+        fetch_error: object,
+        *,
+        origin: str | None = None,
+        cached_policy: RobotsPolicy | None = None,
+    ) -> RobotsPolicy:
+        """Fail closed for a network/server failure, or return a valid cached policy."""
+
+        del fetch_error
+        normalized_origin = cls._normalize_origin(origin) if origin is not None else None
+        if cached_policy is not None:
+            if cached_policy.fetch_outcome is not RobotsFetchOutcome.LOADED:
+                raise ValueError("cached robots policy is not a loaded policy")
+            if normalized_origin is not None:
+                cached_policy._bind_origin(normalized_origin)
+            return cached_policy
+        return cls(
+            (),
+            origin=normalized_origin,
+            explicit=False,
+            fetch_outcome=RobotsFetchOutcome.UNREACHABLE,
+            max_bytes=None,
+            max_match_url_bytes=DEFAULT_MAX_MATCH_URL_BYTES,
+            max_rule_operations=DEFAULT_MAX_RULE_MATCH_OPERATIONS,
+            unavailable_delay=None,
+            fetch_error="robots policy unreachable",
         )
 
     @staticmethod
@@ -283,14 +373,20 @@ class RobotsPolicy:
         parsed = urlsplit(normalized)
         return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
 
+    def _bind_origin(self, candidate_origin: str) -> None:
+        with self._origin_lock:
+            if self._origin is None:
+                self._origin = candidate_origin
+            elif candidate_origin != self._origin:
+                raise UnsafeTarget("robots policy URL does not match its origin")
+
     def _validated_url(self, absolute_http_url: str) -> str:
         normalized = normalize_url(absolute_http_url)
-        if self._max_bytes is not None and len(normalized.encode("utf-8")) > self._max_bytes:
-            raise UnsafeTarget("robots policy URL exceeds maximum size")
+        if len(normalized.encode("utf-8")) > self._max_match_url_bytes:
+            raise UnsafeTarget("robots policy match URL exceeds maximum size")
         parsed = urlsplit(normalized)
         candidate_origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
-        if self._origin is not None and candidate_origin != self._origin:
-            raise UnsafeTarget("robots policy URL does not match its origin")
+        self._bind_origin(candidate_origin)
         return normalized
 
     def _matching_groups(self, user_agent: str) -> tuple[tuple[_Group, ...], tuple[_Group, ...]]:
@@ -316,17 +412,25 @@ class RobotsPolicy:
         """Return the merged longest-match decision for a same-origin URL."""
 
         normalized = self._validated_url(absolute_http_url)
+        if self._fetch_outcome is RobotsFetchOutcome.UNREACHABLE:
+            return False
         if not self._explicit:
             return True
         parsed = urlsplit(normalized)
-        path_query = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        has_query = bool(parsed.query) or normalized.endswith("?")
+        path_query = parsed.path + (f"?{parsed.query}" if has_query else "")
         match_value = _canonical_match_text(path_query, rule_pattern=False)
         specific_groups, wildcard_groups = self._matching_groups(user_agent)
         selected_groups = specific_groups or wildcard_groups
         best_specificity = -1
         allowed = True
+        operations = 0
         for group in selected_groups:
             for rule in group.rules:
+                rule_operations = max(1, len(rule.literals))
+                if operations + rule_operations > self._max_rule_operations:
+                    return False
+                operations += rule_operations
                 if not rule.matches(match_value):
                     continue
                 if rule.specificity > best_specificity:
@@ -362,4 +466,7 @@ class RobotsPolicy:
     def homepage_blocked(self, user_agent: str, homepage_url: str) -> bool:
         """Return a terminal signal only for an explicit homepage disallow."""
 
-        return self._explicit and not self.homepage_allowed(user_agent, homepage_url)
+        allowed = self.homepage_allowed(user_agent, homepage_url)
+        return (
+            self._fetch_outcome is RobotsFetchOutcome.UNREACHABLE or self._explicit
+        ) and not allowed

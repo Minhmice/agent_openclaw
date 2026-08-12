@@ -1,9 +1,10 @@
 """URL and redirect validation at the crawler's SSRF boundary.
 
-All HTTPX, Playwright, and asset-fetch adapters must call :func:`validate_redirect`
-for every navigation or redirect hop and must sanitize forwarded headers. DNS checks
-are mandatory but cannot eliminate time-of-check/time-of-use races by themselves;
-future transports must connect to a validated address or revalidate the peer address.
+Automatic redirects are forbidden. HTTPX, Playwright, and asset-fetch adapters must
+issue every hop manually, call :func:`validate_redirect`, and use its returned canonical
+URL exactly. Each hop must also be DNS-revalidated and connected to a validated address
+or have its connected peer address revalidated; DNS checks alone cannot eliminate the
+time-of-check/time-of-use race. Forwarded headers must be sanitized on every hop.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from collections.abc import Iterable, Mapping
 from typing import Protocol, TypeAlias
 from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
 
+import idna
+
 IPAddress: TypeAlias = ipaddress.IPv4Address | ipaddress.IPv6Address
 AddressInput: TypeAlias = str | IPAddress
 
@@ -22,6 +25,8 @@ _BAD_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _ENCODED_DOT = re.compile(r"%2E", re.IGNORECASE)
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _NUMERIC_HOST = re.compile(r"[0-9a-fx.]+\Z", re.IGNORECASE)
+_AMBIGUOUS_REDIRECT_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:/{3,}")
+_HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z", re.ASCII)
 _SPECIAL_HOST_SUFFIXES = (
     "localhost",
     "local",
@@ -34,17 +39,64 @@ _SPECIAL_HOST_SUFFIXES = (
     "example",
     "onion",
 )
-_SENSITIVE_REDIRECT_HEADERS = frozenset(
+_SAFE_REDIRECT_HEADERS = frozenset(
     {
-        "authorization",
-        "proxy-authorization",
-        "cookie",
-        "host",
-        "origin",
-        "referer",
-        "x-api-key",
-        "proxy-connection",
+        "accept",
+        "accept-encoding",
+        "accept-language",
+        "cache-control",
+        "pragma",
+        "range",
+        "user-agent",
     }
+)
+_ALLOW_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "192.0.0.9/32",
+        "192.0.0.10/32",
+        "64:ff9b::/96",
+        "2001:1::1/128",
+        "2001:1::2/128",
+        "2001:1::3/128",
+        "2001:3::/32",
+        "2001:4:112::/48",
+        "2001:20::/28",
+        "2001:30::/28",
+    )
+)
+_DENY_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.88.99.2/32",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "::/128",
+        "::1/128",
+        "64:ff9b:1::/48",
+        "100::/64",
+        "100:0:0:1::/64",
+        "2001::/23",
+        "2001:db8::/32",
+        "3fff::/20",
+        "5f00::/16",
+        "fc00::/7",
+        "fe80::/10",
+        "fec0::/10",
+        "ff00::/8",
+    )
 )
 
 
@@ -116,12 +168,19 @@ def _decode_dot_segment_escapes(path: str) -> str:
 def _is_public_address(address: IPAddress) -> bool:
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         return _is_public_address(address.ipv4_mapped)
+    if any(
+        address.version == network.version and address in network for network in _ALLOW_NETWORKS
+    ):
+        return True
+    if any(address.version == network.version and address in network for network in _DENY_NETWORKS):
+        return False
     return address.is_global and not (
         address.is_private
         or address.is_loopback
         or address.is_link_local
         or address.is_multicast
         or address.is_reserved
+        or (isinstance(address, ipaddress.IPv6Address) and address.is_site_local)
         or address.is_unspecified
     )
 
@@ -150,9 +209,14 @@ def _normalize_host(host: str) -> tuple[str, IPAddress | None]:
     if host[0].isdigit() and _NUMERIC_HOST.fullmatch(host):
         raise UnsafeTarget("URL contains an ambiguous numeric hostname")
     try:
-        ascii_host = host.encode("idna").decode("ascii").lower()
-    except UnicodeError as error:
+        ascii_host = idna.encode(host, uts46=True, std3_rules=True, transitional=False).decode(
+            "ascii"
+        )
+    except idna.IDNAError as error:
         raise UnsafeTarget("URL contains an invalid internationalized hostname") from error
+    ascii_host = ascii_host.lower().rstrip(".")
+    if not ascii_host:
+        raise UnsafeTarget("URL host is missing")
     literal = _normalize_literal_host(ascii_host)
     if literal is not None:
         return literal
@@ -223,7 +287,11 @@ def normalize_url(url: str) -> str:
         raise UnsafeTarget("URL path is ambiguous")
     path = _remove_dot_segments(_decode_dot_segment_escapes(_normalize_escapes(path)))
     query = _normalize_escapes(parsed.query)
-    return urlunsplit((scheme, authority, path, query, ""))
+    normalized = urlunsplit((scheme, authority, path, query, ""))
+    query_delimiter_present = "?" in url.partition("#")[0]
+    if query_delimiter_present and not query:
+        normalized = f"{normalized}?"
+    return normalized
 
 
 def validate_resolved_ips(addresses: Iterable[AddressInput]) -> tuple[IPAddress, ...]:
@@ -252,28 +320,66 @@ def resolve_and_validate(host: str, resolver: Resolver) -> tuple[IPAddress, ...]
     """Resolve *host* with an injected resolver and validate every answer."""
 
     normalized_host, _literal = _normalize_host(host)
+    resolution_failed = False
     try:
-        addresses = resolver(normalized_host)
-        return validate_resolved_ips(addresses)
-    except UnsafeTarget:
-        raise
+        addresses = tuple(resolver(normalized_host))
     except Exception:  # noqa: BLE001 - resolver implementations have no shared exception base.
+        resolution_failed = True
+        addresses = ()
+    if resolution_failed:
         raise UnsafeTarget("DNS resolution failed") from None
+    return validate_resolved_ips(addresses)
+
+
+def _validate_redirect_location(location: str) -> None:
+    """Reject raw references whose authority is interpreted inconsistently by clients."""
+
+    _reject_ambiguous_text(location)
+    _normalize_escapes(location)
+    if location.startswith("///") or _AMBIGUOUS_REDIRECT_SCHEME.match(location):
+        raise UnsafeTarget("redirect Location has ambiguous slash or authority syntax")
+    try:
+        parsed = urlsplit(location)
+    except ValueError as error:
+        raise UnsafeTarget("redirect Location authority is malformed") from error
+    if location.startswith("//"):
+        if (
+            not parsed.netloc
+            or parsed.hostname is None
+            or "@" in parsed.netloc
+            or "%" in parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise UnsafeTarget("redirect Location network authority is malformed")
+        try:
+            _port = parsed.port
+        except ValueError as error:
+            raise UnsafeTarget("redirect Location port is malformed") from error
 
 
 def validate_redirect(source_url: str, location: str, resolver: Resolver) -> str:
     """Resolve, normalize, and DNS-check one redirect hop.
 
-    HTTPS-to-HTTP redirects are rejected to avoid transport downgrades. This function
-    deliberately performs a new resolver call for the destination on every invocation;
-    callers must never reuse the source hop's DNS result.
+    Automatic redirects are forbidden. The adapter must issue the hop manually using
+    the returned canonical URL exactly, then connect to a validated address or revalidate
+    the connected peer. HTTPS-to-HTTP redirects are rejected. A new resolver call is
+    deliberately performed for every invocation; callers must never reuse a prior hop's
+    DNS result.
     """
 
     source = normalize_url(source_url)
     if not isinstance(location, str) or not location:
         raise UnsafeTarget("redirect Location is missing")
-    _reject_ambiguous_text(location)
-    destination = normalize_url(urljoin(source, location))
+    _validate_redirect_location(location)
+    if location == "?":
+        source_parts = urlsplit(source)
+        joined = (
+            urlunsplit((source_parts.scheme, source_parts.netloc, source_parts.path, "", "")) + "?"
+        )
+    else:
+        joined = urljoin(source, location)
+    destination = normalize_url(joined)
     source_scheme = urlsplit(source).scheme
     destination_parts = urlsplit(destination)
     if source_scheme == "https" and destination_parts.scheme == "http":
@@ -287,15 +393,24 @@ def sanitize_redirect_headers(
 ) -> dict[str, str]:
     """Copy safe request headers for a redirect without mutating the caller mapping.
 
-    Credentials, cookies, API keys, and host-derived headers are stripped on every hop,
-    including same-origin redirects. Network adapters should regenerate any required
-    host-derived values from the validated destination.
+    A conservative allowlist is applied on every hop, including same-origin redirects;
+    credentials, cookies, API keys, forwarding metadata, host-derived values, referrers,
+    origins, and unknown headers are never forwarded. Network adapters should regenerate
+    required host-derived values from the validated destination. The mapping API cannot
+    represent duplicate field names; adapters with duplicate fields must combine them
+    safely before calling this function.
     """
 
     normalize_url(source_url)
     normalize_url(target_url)
-    return {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in _SENSITIVE_REDIRECT_HEADERS
-    }
+    sanitized: dict[str, str] = {}
+    for key, value in headers.items():
+        if not isinstance(key, str) or _HEADER_NAME.fullmatch(key) is None:
+            raise UnsafeTarget("redirect header name is invalid")
+        if not isinstance(value, str) or any(
+            ord(character) < 32 or ord(character) == 127 for character in value
+        ):
+            raise UnsafeTarget("redirect header value contains a control character")
+        if key.casefold() in _SAFE_REDIRECT_HEADERS:
+            sanitized[key] = value
+    return sanitized
