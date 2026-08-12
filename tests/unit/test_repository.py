@@ -20,6 +20,7 @@ from openclaw_web.db.connection import (
 from openclaw_web.db.connection import connect as open_connection
 from openclaw_web.db.migrations import Migration, MigrationError, migrate
 from openclaw_web.db.repository import (
+    DiscoverySeedBatch,
     DiscoverySeedDisposition,
     Repository,
     RepositoryConflict,
@@ -121,6 +122,51 @@ def _seed(url: str, name: str, address: str | None) -> CandidateSeed:
         discovered_at=datetime(2026, 8, 12, tzinfo=UTC),
         address=address,
     )
+
+
+def test_discovery_batch_persists_each_actual_source_observation_with_its_timestamp(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    earlier = _seed("https://example.com", "Example result", None).validated_replace(
+        source_type="serper",
+        source_url="https://google.com/search?q=example",
+        discovered_at=datetime(2026, 8, 12, 1, tzinfo=UTC),
+        external_id="result-1",
+        metadata={"provider": "serper"},
+    )
+    later = earlier.validated_replace(
+        url="https://example.com/about",
+        business_name="Example Company",
+        source_type="google-places",
+        source_url="https://maps.google.com/?cid=1",
+        discovered_at=datetime(2026, 8, 12, 2, tzinfo=UTC),
+        address="Hoàn Kiếm, Hà Nội",
+        latitude=21.03,
+        longitude=105.83,
+        external_id="place-1",
+        metadata={"provider": "google-places"},
+    )
+
+    result = Repository(db).upsert_discovery_seed(
+        DiscoverySeedBatch(seed=later, observations=(earlier, later)), "local-service"
+    )
+    rows = db.execute(
+        "SELECT source_type, discovered_at, snapshot_json FROM candidate_sources "
+        "ORDER BY source_type"
+    ).fetchall()
+
+    assert result.disposition is DiscoverySeedDisposition.INSERTED
+    assert len(rows) == 2
+    snapshots = {row["source_type"]: json.loads(row["snapshot_json"]) for row in rows}
+    assert snapshots["serper"]["candidate_seed"] == earlier.model_dump(mode="json")
+    assert snapshots["serper"]["cohort"] == "local-service"
+    assert snapshots["google-places"]["candidate_seed"] == later.model_dump(mode="json")
+    assert {row["source_type"]: row["discovered_at"] for row in rows} == {
+        "google-places": "2026-08-12T02:00:00.000000Z",
+        "serper": "2026-08-12T01:00:00.000000Z",
+    }
 
 
 def _evidence(*, evidence_id: str = "evidence-1", observed_value: str = "fast") -> Evidence:
@@ -233,6 +279,7 @@ def test_db_package_exports_typed_persistence_errors() -> None:
     assert db_package.__all__ == [
         "ConnectionConfigurationError",
         "DiscoverySeedDisposition",
+        "DiscoverySeedBatch",
         "DiscoverySeedUpsertResult",
         "MigrationError",
         "Repository",
@@ -245,6 +292,7 @@ def test_db_package_exports_typed_persistence_errors() -> None:
         "migrate",
     ]
     assert db_package.ConnectionConfigurationError is ConnectionConfigurationError
+    assert db_package.DiscoverySeedBatch is DiscoverySeedBatch
     assert db_package.MigrationError is MigrationError
 
 

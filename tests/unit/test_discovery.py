@@ -4,12 +4,14 @@ import csv
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from itertools import permutations
 from pathlib import Path
 
 import pytest
 
 import openclaw_web.discovery.batch as batch_module
 from openclaw_web.db.repository import (
+    DiscoverySeedBatch,
     DiscoverySeedDisposition,
     DiscoverySeedUpsertResult,
 )
@@ -281,18 +283,22 @@ class _Repository:
     def __init__(self) -> None:
         self.urls: list[str] = []
 
-    def upsert_discovery_seed(self, seed: CandidateSeed, cohort: str) -> DiscoverySeedUpsertResult:
-        self.urls.append(str(seed.url))
+    def upsert_discovery_seed(
+        self, seed: DiscoverySeedBatch, cohort: str
+    ) -> DiscoverySeedUpsertResult:
+        self.urls.append(str(seed.seed.url))
         return DiscoverySeedUpsertResult(
-            DiscoverySeedDisposition.INSERTED, f"candidate:{seed.url}"
+            DiscoverySeedDisposition.INSERTED, f"candidate:{seed.seed.url}"
         )
 
 
 class _DuplicateRepository(_Repository):
-    def upsert_discovery_seed(self, seed: CandidateSeed, cohort: str) -> DiscoverySeedUpsertResult:
-        self.urls.append(str(seed.url))
+    def upsert_discovery_seed(
+        self, seed: DiscoverySeedBatch, cohort: str
+    ) -> DiscoverySeedUpsertResult:
+        self.urls.append(str(seed.seed.url))
         return DiscoverySeedUpsertResult(
-            DiscoverySeedDisposition.DUPLICATE, f"candidate:{seed.url}"
+            DiscoverySeedDisposition.DUPLICATE, f"candidate:{seed.seed.url}"
         )
 
 
@@ -409,6 +415,68 @@ def test_service_merges_richer_same_domain_evidence_independent_of_input_order()
             "google-places",
         }
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+def test_service_merge_has_a_total_order_for_every_seed_permutation() -> None:
+    base = _seed(
+        "https://example.com/about", latitude=21.01, longitude=105.81, hint="other"
+    ).validated_replace(
+        business_name="Example",
+        source_type="directory",
+        source_url="https://directory.example/listing",
+        address="Hà Nội",
+        external_id="listing-1",
+    )
+    seeds = (
+        base.validated_replace(latitude=21.03, longitude=105.83, metadata={"variant": "b"}),
+        base.validated_replace(latitude=21.02, longitude=105.82, metadata={"variant": "a"}),
+        base.validated_replace(latitude=21.01, longitude=105.81, metadata={"variant": "c"}),
+    )
+
+    results = [
+        DiscoveryService().normalize_unique(permutation)[0].model_dump(mode="json")
+        for permutation in permutations(seeds)
+    ]
+
+    assert all(result == results[0] for result in results)
+
+
+def test_service_preserves_each_source_timestamp_and_full_association() -> None:
+    serper_time = datetime(2026, 8, 12, 1, tzinfo=UTC)
+    places_time = datetime(2026, 8, 12, 2, tzinfo=UTC)
+    serper = _seed(
+        "https://example.com", latitude=None, longitude=None, hint="other"
+    ).validated_replace(
+        business_name="Example result",
+        source_type="serper",
+        source_url="https://google.com/search?q=example",
+        discovered_at=serper_time,
+        external_id="result-1",
+        metadata={"provider": "serper", "position": 1},
+    )
+    places = serper.validated_replace(
+        url="https://www.example.com/about",
+        business_name="Example Company",
+        source_type="google-places",
+        source_url="https://maps.google.com/?cid=1",
+        discovered_at=places_time,
+        address="Hoàn Kiếm, Hà Nội",
+        latitude=21.03,
+        longitude=105.83,
+        external_id="place-1",
+        metadata={"provider": "google-places", "rating": 4.7},
+    )
+
+    merged = DiscoveryService().normalize_unique([serper, places])[0]
+    observations = {
+        item["source_type"]: item for item in merged.metadata["source_observations"]
+    }
+
+    assert merged.discovered_at == places_time
+    assert observations["serper"] == serper.model_dump(mode="json")
+    assert observations["google-places"] == places.validated_replace(
+        url="https://example.com/about"
+    ).model_dump(mode="json")
 
 
 def test_service_upserts_duplicate_evidence_and_marks_outcome() -> None:

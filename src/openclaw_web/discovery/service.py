@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, TypedDict
+from typing import Any, Protocol, TypedDict, cast
 
 import tldextract
 from pydantic import AnyHttpUrl, ValidationError
 
 from openclaw_web.crawl.safety import UnsafeTarget, normalize_url
-from openclaw_web.db.repository import DiscoverySeedUpsertResult
+from openclaw_web.db.repository import DiscoverySeedBatch, DiscoverySeedUpsertResult
 from openclaw_web.discovery.base import (
     AutomaticDiscoveryProvider,
     DiscoveryConfigurationError,
@@ -29,17 +30,23 @@ _EXTRACTOR = tldextract.TLDExtract(
 
 
 class _SourceObservation(TypedDict):
+    url: str
+    business_name: str
     source_type: str
     source_url: str
+    discovered_at: str
+    seed_id: str | None
+    address: str | None
     external_id: str | None
     latitude: float | None
     longitude: float | None
+    industry_hint: str | None
     metadata: dict[str, Any]
 
 
 class CandidateRepository(Protocol):
     def upsert_discovery_seed(
-        self, seed: CandidateSeed, cohort: str
+        self, seed: DiscoverySeedBatch, cohort: str
     ) -> DiscoverySeedUpsertResult: ...
 
 
@@ -109,6 +116,11 @@ class DiscoveryService:
         return domain.lower()
 
     def normalize_unique(self, seeds: Iterable[CandidateSeed]) -> tuple[CandidateSeed, ...]:
+        return tuple(batch.seed for batch in self._normalize_batches(seeds))
+
+    def _normalize_batches(
+        self, seeds: Iterable[CandidateSeed]
+    ) -> tuple[DiscoverySeedBatch, ...]:
         if isinstance(seeds, str | bytes | bytearray):
             raise TypeError("seeds must be a non-string iterable")
         grouped: dict[str, list[CandidateSeed]] = {}
@@ -133,7 +145,22 @@ class DiscoveryService:
                 raise DiscoveryPayloadError("invalid candidate seed URL") from None
             grouped.setdefault(identity, []).append(normalized)
         return tuple(
-            self._merge_evidence(grouped[identity]) for identity in sorted(grouped)[: self._cap]
+            DiscoverySeedBatch(
+                seed=self._merge_evidence(grouped[identity]),
+                observations=tuple(
+                    sorted(grouped[identity], key=self._canonical_seed_order)
+                ),
+            )
+            for identity in sorted(grouped)[: self._cap]
+        )
+
+    @staticmethod
+    def _canonical_seed_order(seed: CandidateSeed) -> str:
+        return json.dumps(
+            seed.model_dump(mode="json", exclude_none=False),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
         )
 
     @staticmethod
@@ -152,52 +179,24 @@ class DiscoveryService:
         best_quality = max(quality(seed) for seed in seeds)
         strongest = min(
             (seed for seed in seeds if quality(seed) == best_quality),
-            key=lambda seed: (str(seed.source_url), str(seed.url)),
+            key=DiscoveryService._canonical_seed_order,
         )
-        ordered = sorted(seeds, key=lambda seed: (quality(seed), str(seed.url)), reverse=True)
-        coordinate_seeds = [
-            seed for seed in ordered if seed.latitude is not None and seed.longitude is not None
+        observations: list[_SourceObservation] = [
+            cast(_SourceObservation, seed.model_dump(mode="json"))
+            for seed in sorted(seeds, key=DiscoveryService._canonical_seed_order)
         ]
-        coordinates = (
-            (coordinate_seeds[0].latitude, coordinate_seeds[0].longitude)
-            if coordinate_seeds
-            else (None, None)
-        )
-        earliest = min(seed.discovered_at for seed in seeds)
-        observations: list[_SourceObservation] = sorted(
-            (
-                {
-                    "source_type": str(seed.source_type),
-                    "source_url": str(seed.source_url),
-                    "external_id": seed.external_id,
-                    "latitude": seed.latitude,
-                    "longitude": seed.longitude,
-                    "metadata": dict(seed.metadata),
-                }
-                for seed in seeds
-            ),
-            key=lambda item: (
-                item["source_type"],
-                item["source_url"],
-                str(item["external_id"] or ""),
-            ),
-        )
         metadata: dict[str, Any] = dict(strongest.metadata)
         metadata["source_observations"] = observations
-        return strongest.validated_replace(
-            discovered_at=earliest,
-            latitude=coordinates[0],
-            longitude=coordinates[1],
-            metadata=metadata,
-        )
+        return strongest.validated_replace(metadata=metadata)
 
     def process(self, seeds: Iterable[CandidateSeed]) -> DiscoveryProcessResult:
-        normalized = self.normalize_unique(seeds)
-        if normalized and self._geofence is None:
+        batches = self._normalize_batches(seeds)
+        if batches and self._geofence is None:
             raise DiscoveryConfigurationError("geofence is not configured")
         outcomes: list[DiscoveryOutcome] = []
         candidates: list[object] = []
-        for seed in normalized:
+        for batch in batches:
+            seed = batch.seed
             geofence = (
                 self._geofence.evaluate(
                     LocationEvidence(
@@ -225,7 +224,7 @@ class DiscoveryService:
             candidate: object = seed
             status = "accepted"
             if self._repository is not None:
-                persisted = self._repository.upsert_discovery_seed(seed, cohort)
+                persisted = self._repository.upsert_discovery_seed(batch, cohort)
                 candidate = persisted.candidate
                 status = (
                     "accepted" if persisted.disposition == "inserted" else persisted.disposition

@@ -56,6 +56,22 @@ class DiscoverySeedDisposition(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class DiscoverySeedBatch:
+    """One representative candidate plus its intact same-domain observations."""
+
+    seed: CandidateSeed
+    observations: tuple[CandidateSeed, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.seed, CandidateSeed):
+            raise TypeError("seed must be a CandidateSeed")
+        if not self.observations:
+            raise ValueError("observations must not be empty")
+        if any(not isinstance(item, CandidateSeed) for item in self.observations):
+            raise TypeError("observations must contain CandidateSeed values")
+
+
+@dataclass(frozen=True, slots=True)
 class DiscoverySeedUpsertResult:
     disposition: DiscoverySeedDisposition
     candidate: Candidate
@@ -245,11 +261,9 @@ class Repository:
         conflict: bool,
     ) -> None:
         seed_payload = seed.model_dump(mode="json")
-        identity_seed = dict(seed_payload)
-        identity_seed.pop("discovered_at", None)
         identity = {
             "candidate_id": candidate_id,
-            "candidate_seed": identity_seed,
+            "candidate_seed": seed_payload,
             "canonical_domain": canonical_domain,
             "cohort": cohort,
         }
@@ -286,32 +300,42 @@ class Repository:
 
     def upsert_discovery_seed(
         self,
-        seed: CandidateSeed,
+        seed: CandidateSeed | DiscoverySeedBatch,
         cohort: str,
     ) -> DiscoverySeedUpsertResult:
-        """Atomically persist a seed and its complete source observation."""
+        """Atomically persist a representative and every intact source observation."""
 
-        if not isinstance(seed, CandidateSeed):
-            raise TypeError("seed must be a CandidateSeed")
+        if isinstance(seed, DiscoverySeedBatch):
+            representative = seed.seed
+            observations = seed.observations
+        elif isinstance(seed, CandidateSeed):
+            representative = seed
+            observations = (seed,)
+        else:
+            raise TypeError("seed must be a CandidateSeed or DiscoverySeedBatch")
         normalized_cohort = _require_nonblank(cohort, "cohort")
-        validated_url, canonical_domain = _canonical_domain(seed.url)
-        normalized_name = _normalize_match_text(seed.business_name)
+        validated_url, canonical_domain = _canonical_domain(representative.url)
+        if any(_canonical_domain(item.url)[1] != canonical_domain for item in observations):
+            raise ValueError("all discovery observations must share a canonical domain")
+        normalized_name = _normalize_match_text(representative.business_name)
         normalized_address = (
-            _normalize_match_text(seed.address) if seed.address is not None else None
+            _normalize_match_text(representative.address)
+            if representative.address is not None
+            else None
         )
         candidate = Candidate(
             candidate_id=f"candidate-{uuid.uuid5(uuid.NAMESPACE_URL, canonical_domain).hex}",
-            name=seed.business_name,
-            seed_id=seed.seed_id,
+            name=representative.business_name,
+            seed_id=representative.seed_id,
             website_url=validated_url,
             canonical_domain=canonical_domain,
-            address=seed.address,
+            address=representative.address,
             industry=normalized_cohort,
-            latitude=seed.latitude,
-            longitude=seed.longitude,
-            discovered_at=seed.discovered_at,
-            updated_at=seed.discovered_at,
-            source_urls=[seed.source_url],
+            latitude=representative.latitude,
+            longitude=representative.longitude,
+            discovered_at=representative.discovered_at,
+            updated_at=representative.discovered_at,
+            source_urls=[item.source_url for item in observations],
         )
         disposition = DiscoverySeedDisposition.INSERTED
         persisted = candidate
@@ -360,8 +384,8 @@ class Repository:
                         normalized_name,
                         normalized_address,
                         candidate.state.value,
-                        _utc_text(seed.discovered_at),
-                        _utc_text(seed.discovered_at),
+                        _utc_text(representative.discovered_at),
+                        _utc_text(representative.discovered_at),
                         _canonical_json(candidate),
                     ),
                 )
@@ -381,13 +405,14 @@ class Repository:
                     if contradictory
                     else DiscoverySeedDisposition.DUPLICATE
                 )
-            self._append_discovery_seed_source(
-                persisted.candidate_id,
-                canonical_domain,
-                seed,
-                normalized_cohort,
-                conflict=disposition is DiscoverySeedDisposition.CONFLICT,
-            )
+            for observation in observations:
+                self._append_discovery_seed_source(
+                    persisted.candidate_id,
+                    canonical_domain,
+                    observation,
+                    normalized_cohort,
+                    conflict=disposition is DiscoverySeedDisposition.CONFLICT,
+                )
 
         return DiscoverySeedUpsertResult(disposition, persisted)
 
