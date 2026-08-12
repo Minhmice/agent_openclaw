@@ -32,7 +32,12 @@ def html(body: str, status: int = 200, **headers: str) -> httpx.Response:
     )
 
 
-def client_for(routes: dict[str, httpx.Response | Exception], requests: list[str]) -> httpx.AsyncClient:
+def client_for(
+    routes: dict[str, httpx.Response | Exception],
+    requests: list[str],
+    *,
+    follow_redirects: bool = False,
+) -> httpx.AsyncClient:
     async def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         requests.append(url)
@@ -45,7 +50,9 @@ def client_for(routes: dict[str, httpx.Response | Exception], requests: list[str
         response.extensions.setdefault("network_stream", PeerStream(PUBLIC_IP))
         return response
 
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False)
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=follow_redirects
+    )
 
 
 @pytest.mark.asyncio
@@ -364,6 +371,39 @@ async def test_same_site_cross_origin_redirect_obeys_destination_robots() -> Non
 
     assert result.pages == ()
     assert result.failures[0].reason == "robots disallowed"
+    assert "https://shop.example.com/robots.txt" in requested
+    assert "https://shop.example.com/private" not in requested
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_injected_redirect_following_cannot_bypass_destination_robots_peer_check() -> None:
+    requested: list[str] = []
+    mismatched_robots = httpx.Response(
+        200,
+        text="User-agent: *\nAllow: /\n",
+        headers={"Content-Type": "text/plain"},
+    )
+    mismatched_robots.extensions["network_stream"] = PeerStream("1.1.1.1")
+    client = client_for(
+        {
+            "https://www.example.com/robots.txt": httpx.Response(404),
+            "https://www.example.com/": httpx.Response(
+                302, headers={"Location": "https://shop.example.com/private"}
+            ),
+            "https://shop.example.com/robots.txt": mismatched_robots,
+            "https://shop.example.com/private": html("must not be fetched"),
+        },
+        requested,
+        follow_redirects=True,
+    )
+
+    result = await WebsiteCrawler(client=client, resolver=public_resolver).crawl(
+        "https://www.example.com/"
+    )
+
+    assert result.pages == ()
+    assert result.failures[0].reason == "robots policy unreachable"
     assert "https://shop.example.com/robots.txt" in requested
     assert "https://shop.example.com/private" not in requested
     await client.aclose()

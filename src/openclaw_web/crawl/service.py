@@ -230,7 +230,10 @@ class WebsiteCrawler:
                 current_delay = policy.crawl_delay(_USER_AGENT)
             await self._limiter.wait(current_origin, current_delay)
             async with self._client.stream(
-                "GET", current, headers={"Accept": "text/html,application/xhtml+xml", "User-Agent": _USER_AGENT}
+                "GET",
+                current,
+                headers={"Accept": "text/html,application/xhtml+xml", "User-Agent": _USER_AGENT},
+                follow_redirects=False,
             ) as response:
                 self._validate_connected_peer(response, validated_addresses)
                 if response.status_code in _REDIRECT_STATUSES:
