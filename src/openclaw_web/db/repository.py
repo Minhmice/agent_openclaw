@@ -11,7 +11,9 @@ import unicodedata
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any, Self, TypeVar
 
 import tldextract
@@ -43,6 +45,20 @@ RepositoryConflictError = RepositoryConflict
 
 class RunConfigMismatchError(RepositoryConflict):
     """A run idempotency key was resumed with a different configuration."""
+
+
+class DiscoverySeedDisposition(StrEnum):
+    """Atomic result of persisting one discovery observation."""
+
+    INSERTED = "inserted"
+    DUPLICATE = "duplicate"
+    CONFLICT = "conflict"
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoverySeedUpsertResult:
+    disposition: DiscoverySeedDisposition
+    candidate: Candidate
 
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
@@ -218,6 +234,162 @@ class Repository:
                 snapshot,
             ),
         )
+
+    def _append_discovery_seed_source(
+        self,
+        candidate_id: str,
+        canonical_domain: str,
+        seed: CandidateSeed,
+        cohort: str,
+        *,
+        conflict: bool,
+    ) -> None:
+        seed_payload = seed.model_dump(mode="json")
+        identity_seed = dict(seed_payload)
+        identity_seed.pop("discovered_at", None)
+        identity = {
+            "candidate_id": candidate_id,
+            "candidate_seed": identity_seed,
+            "canonical_domain": canonical_domain,
+            "cohort": cohort,
+        }
+        observation_id = hashlib.sha256(
+            _canonical_mapping_json(identity).encode("utf-8")
+        ).hexdigest()
+        snapshot = _canonical_mapping_json(
+            {
+                "candidate_id": candidate_id,
+                "candidate_seed": seed_payload,
+                "canonical_domain": canonical_domain,
+                "cohort": cohort,
+            }
+        )
+        self.connection.execute(
+            """
+            INSERT INTO candidate_sources (
+                observation_id, candidate_id, source_url, canonical_domain, source_type,
+                discovered_at, conflict, snapshot_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(observation_id) DO NOTHING
+            """,
+            (
+                observation_id,
+                candidate_id,
+                str(seed.source_url),
+                canonical_domain,
+                seed.source_type,
+                _utc_text(seed.discovered_at),
+                int(conflict),
+                snapshot,
+            ),
+        )
+
+    def upsert_discovery_seed(
+        self,
+        seed: CandidateSeed,
+        cohort: str,
+    ) -> DiscoverySeedUpsertResult:
+        """Atomically persist a seed and its complete source observation."""
+
+        if not isinstance(seed, CandidateSeed):
+            raise TypeError("seed must be a CandidateSeed")
+        normalized_cohort = _require_nonblank(cohort, "cohort")
+        validated_url, canonical_domain = _canonical_domain(seed.url)
+        normalized_name = _normalize_match_text(seed.business_name)
+        normalized_address = (
+            _normalize_match_text(seed.address) if seed.address is not None else None
+        )
+        candidate = Candidate(
+            candidate_id=f"candidate-{uuid.uuid5(uuid.NAMESPACE_URL, canonical_domain).hex}",
+            name=seed.business_name,
+            seed_id=seed.seed_id,
+            website_url=validated_url,
+            canonical_domain=canonical_domain,
+            address=seed.address,
+            industry=normalized_cohort,
+            latitude=seed.latitude,
+            longitude=seed.longitude,
+            discovered_at=seed.discovered_at,
+            updated_at=seed.discovered_at,
+            source_urls=[seed.source_url],
+        )
+        disposition = DiscoverySeedDisposition.INSERTED
+        persisted = candidate
+
+        with _immediate_transaction(self.connection):
+            row = self.connection.execute(
+                """
+                SELECT snapshot_json, normalized_name, normalized_address
+                FROM candidates WHERE canonical_domain = ?
+                """,
+                (canonical_domain,),
+            ).fetchone()
+            matched_domain = row is not None
+            if row is None:
+                row = self.connection.execute(
+                    """
+                    SELECT c.snapshot_json, c.normalized_name, c.normalized_address
+                    FROM candidate_sources AS s
+                    JOIN candidates AS c ON c.candidate_id = s.candidate_id
+                    WHERE s.canonical_domain = ?
+                    LIMIT 1
+                    """,
+                    (canonical_domain,),
+                ).fetchone()
+                matched_domain = row is not None
+            if row is None and normalized_address is not None:
+                row = self.connection.execute(
+                    """
+                    SELECT snapshot_json, normalized_name, normalized_address
+                    FROM candidates
+                    WHERE normalized_name = ? AND normalized_address = ?
+                    """,
+                    (normalized_name, normalized_address),
+                ).fetchone()
+            if row is None:
+                self.connection.execute(
+                    """
+                    INSERT INTO candidates (
+                        candidate_id, canonical_domain, normalized_name, normalized_address,
+                        state, discovered_at, updated_at, snapshot_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        candidate.candidate_id,
+                        canonical_domain,
+                        normalized_name,
+                        normalized_address,
+                        candidate.state.value,
+                        _utc_text(seed.discovered_at),
+                        _utc_text(seed.discovered_at),
+                        _canonical_json(candidate),
+                    ),
+                )
+            else:
+                persisted = self._candidate_from_row(row)
+                persisted_address = row["normalized_address"]
+                contradictory = matched_domain and (
+                    str(row["normalized_name"]) != normalized_name
+                    or (
+                        persisted_address is not None
+                        and normalized_address is not None
+                        and str(persisted_address) != normalized_address
+                    )
+                )
+                disposition = (
+                    DiscoverySeedDisposition.CONFLICT
+                    if contradictory
+                    else DiscoverySeedDisposition.DUPLICATE
+                )
+            self._append_discovery_seed_source(
+                persisted.candidate_id,
+                canonical_domain,
+                seed,
+                normalized_cohort,
+                conflict=disposition is DiscoverySeedDisposition.CONFLICT,
+            )
+
+        return DiscoverySeedUpsertResult(disposition, persisted)
 
     def upsert_candidate(
         self,

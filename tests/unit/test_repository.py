@@ -20,6 +20,7 @@ from openclaw_web.db.connection import (
 from openclaw_web.db.connection import connect as open_connection
 from openclaw_web.db.migrations import Migration, MigrationError, migrate
 from openclaw_web.db.repository import (
+    DiscoverySeedDisposition,
     Repository,
     RepositoryConflict,
     _immediate_transaction,
@@ -231,6 +232,8 @@ def _insert_project_parent(db: sqlite3.Connection, project_id: str = "project-1"
 def test_db_package_exports_typed_persistence_errors() -> None:
     assert db_package.__all__ == [
         "ConnectionConfigurationError",
+        "DiscoverySeedDisposition",
+        "DiscoverySeedUpsertResult",
         "MigrationError",
         "Repository",
         "RepositoryConflict",
@@ -970,6 +973,117 @@ def test_concurrent_candidate_upsert_is_atomic(tmp_path: Path) -> None:
     check = connect(path)
     assert ids[0] == ids[1]
     assert Repository(check).count_candidates() == 1
+
+
+def test_discovery_seed_upsert_preserves_complete_observation_and_cohort(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    seed = _seed("https://example.com/about", "Example", "Hà Nội").validated_replace(
+        source_url="https://maps.google.com/?cid=place-1",
+        source_type="google-places",
+        discovered_at=datetime(2026, 8, 12, 1, 2, 3, tzinfo=UTC),
+        seed_id="seed-1",
+        latitude=21.03,
+        longitude=105.83,
+        external_id="place-1",
+        metadata={"provider": "google-places", "rank": 2},
+    )
+
+    result = Repository(db).upsert_discovery_seed(seed, "local-service")
+
+    assert result.disposition is DiscoverySeedDisposition.INSERTED
+    assert isinstance(result.candidate, Candidate)
+    assert result.candidate.website_url == seed.url
+    assert result.candidate.seed_id == "seed-1"
+    assert result.candidate.industry == "local-service"
+    assert (result.candidate.latitude, result.candidate.longitude) == (21.03, 105.83)
+    row = db.execute(
+        "SELECT source_url, source_type, discovered_at, conflict, snapshot_json "
+        "FROM candidate_sources"
+    ).fetchone()
+    snapshot = json.loads(row["snapshot_json"])
+    assert tuple(row)[:4] == (
+        "https://maps.google.com/?cid=place-1",
+        "google-places",
+        "2026-08-12T01:02:03.000000Z",
+        0,
+    )
+    assert snapshot["candidate_seed"] == seed.model_dump(mode="json")
+    assert snapshot["cohort"] == "local-service"
+
+
+def test_discovery_seed_upsert_returns_duplicate_or_conflict_without_losing_evidence(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    first = _seed("https://example.com", "Example", "Hà Nội")
+    duplicate = first.validated_replace(
+        source_url="https://second.example/source",
+        source_type="serper",
+        external_id="result-2",
+    )
+    conflict = duplicate.validated_replace(
+        source_url="https://third.example/source",
+        business_name="Different business",
+        address="Đà Nẵng",
+    )
+
+    assert (
+        repo.upsert_discovery_seed(first, "other").disposition is DiscoverySeedDisposition.INSERTED
+    )
+    assert (
+        repo.upsert_discovery_seed(duplicate, "other").disposition
+        is DiscoverySeedDisposition.DUPLICATE
+    )
+    assert (
+        repo.upsert_discovery_seed(conflict, "other").disposition
+        is DiscoverySeedDisposition.CONFLICT
+    )
+    rows = db.execute(
+        "SELECT source_url, conflict, snapshot_json FROM candidate_sources ORDER BY source_url"
+    ).fetchall()
+    assert len(rows) == 3
+    assert sum(int(row["conflict"]) for row in rows) == 1
+    assert {json.loads(row["snapshot_json"])["candidate_seed"]["external_id"] for row in rows} == {
+        None,
+        "result-2",
+    }
+
+
+def test_concurrent_discovery_seed_upsert_reports_exactly_one_insert(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite"
+    db = connect(path)
+    migrate(db)
+    db.close()
+    barrier = Barrier(2)
+
+    def upsert(source_url: str) -> DiscoverySeedDisposition:
+        connection = connect(path)
+        try:
+            barrier.wait(timeout=5)
+            seed = _seed("https://example.com", "Example", "Hà Nội").validated_replace(
+                source_url=source_url
+            )
+            return Repository(connection).upsert_discovery_seed(seed, "other").disposition
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        dispositions = list(
+            executor.map(
+                upsert,
+                ["https://one.example/source", "https://two.example/source"],
+            )
+        )
+
+    check = connect(path)
+    assert sorted(disposition.value for disposition in dispositions) == ["duplicate", "inserted"]
+    assert Repository(check).count_candidates() == 1
+    assert check.execute("SELECT COUNT(*) FROM candidate_sources").fetchone()[0] == 2
 
 
 def test_create_or_resume_run_is_idempotent_and_rejects_config_mismatch(

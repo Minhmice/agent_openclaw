@@ -397,6 +397,10 @@ def test_service_merges_richer_same_domain_evidence_independent_of_input_order()
             "serper",
             "google-places",
         }
+        assert {item["metadata"]["provider"] for item in seed.metadata["source_observations"]} == {
+            "serper",
+            "google-places",
+        }
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
 
 
