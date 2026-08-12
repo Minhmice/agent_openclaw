@@ -55,12 +55,20 @@ def _contains_keyword(corpus: str, keyword: str) -> bool:
     return f" {keyword} " in f" {corpus} "
 
 
+def _first_matching_field(fields: Sequence[tuple[str, str]], keyword: str) -> str | None:
+    return next(
+        (field for field, text in fields if _contains_keyword(text, keyword)),
+        None,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CohortAssignment:
     cohort: str
     deterministic: bool
     claim_status: ClaimStatus
     evidence_keywords: tuple[str, ...]
+    evidence_fields: tuple[str, ...] = ()
 
 
 def assign_cohort(
@@ -73,17 +81,34 @@ def assign_cohort(
 ) -> CohortAssignment:
     """Assign one approved cohort from observed text, with a gated AI fallback."""
 
-    normalized_text = tuple(
-        filter(None, (_normalize(industry_hint), _normalize(name), _normalize(description)))
+    normalized_fields = tuple(
+        (field, normalized)
+        for field, value in (
+            ("industry_hint", industry_hint),
+            ("name", name),
+            ("description", description),
+        )
+        if (normalized := _normalize(value))
     )
-    for text in normalized_text:
+    for field, text in normalized_fields:
         if cohort := _APPROVED_COHORT_BY_NORMALIZED_ID.get(text):
-            return CohortAssignment(cohort, True, ClaimStatus.OBSERVED, (cohort,))
-    corpus = " ".join(normalized_text)
+            return CohortAssignment(cohort, True, ClaimStatus.OBSERVED, (cohort,), (field,))
+    # Cohort order remains the primary overlap precedence. Within a cohort,
+    # field order chooses the evidence source when one keyword appears more than once.
     for cohort, keywords in _KEYWORDS:
-        matched = tuple(keyword for keyword in keywords if _contains_keyword(corpus, keyword))
-        if matched:
-            return CohortAssignment(cohort, True, ClaimStatus.OBSERVED, matched)
+        matches = tuple(
+            (keyword, matched_field)
+            for keyword in keywords
+            if (matched_field := _first_matching_field(normalized_fields, keyword)) is not None
+        )
+        if matches:
+            return CohortAssignment(
+                cohort,
+                True,
+                ClaimStatus.OBSERVED,
+                tuple(keyword for keyword, _ in matches),
+                tuple(field for _, field in matches),
+            )
     if ai_claim_status is ClaimStatus.INFERRED and ai_suggestion in APPROVED_COHORTS:
         return CohortAssignment(ai_suggestion, False, ClaimStatus.INFERRED, ())
     return CohortAssignment("other", True, ClaimStatus.OBSERVED, ())

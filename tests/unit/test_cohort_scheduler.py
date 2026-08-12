@@ -68,13 +68,62 @@ def test_hospitality_keyword_does_not_match_healthcare_hospital_substring() -> N
     assert result.evidence_keywords == ("hospitality",)
 
 
+@pytest.mark.parametrize("field", ("industry_hint", "name", "description"))
 @pytest.mark.parametrize("cohort", APPROVED_COHORTS)
-def test_exact_approved_cohort_ids_map_to_themselves(cohort: str) -> None:
-    result = assign_cohort(industry_hint=cohort)
+def test_exact_approved_cohort_ids_map_to_themselves(field: str, cohort: str) -> None:
+    result = assign_cohort(**{field: cohort})
 
     assert result.cohort == cohort
     assert result.deterministic is True
     assert result.claim_status is ClaimStatus.OBSERVED
+    assert result.evidence_keywords == (cohort,)
+    assert result.evidence_fields == (field,)
+
+
+@pytest.mark.parametrize(
+    ("name", "description"),
+    (
+        ("Acme online", "shop solutions"),
+        ("Surreal real", "estate photography"),
+        ("Phong", "Kham Media"),
+    ),
+)
+def test_multiword_keywords_do_not_span_classification_fields(name: str, description: str) -> None:
+    result = assign_cohort(name=name, description=description)
+
+    assert result.cohort == "other"
+    assert result.evidence_keywords == ()
+
+
+@pytest.mark.parametrize(
+    ("phrase", "cohort", "keyword"),
+    (
+        ("Premium online shop platform", "ecommerce", "online shop"),
+        ("Premium real estate listings", "real-estate", "real estate"),
+        ("Dich vu phong kham", "healthcare", "phong kham"),
+    ),
+)
+@pytest.mark.parametrize("field", ("industry_hint", "name", "description"))
+def test_multiword_keyword_matches_within_each_classification_field(
+    field: str, phrase: str, cohort: str, keyword: str
+) -> None:
+    result = assign_cohort(**{field: phrase})
+
+    assert result.cohort == cohort
+    assert result.evidence_keywords == (keyword,)
+    assert result.evidence_fields == (field,)
+
+
+def test_cohort_precedence_wins_when_keywords_match_in_different_fields() -> None:
+    result = assign_cohort(
+        industry_hint="online shop",
+        name="Acme legal",
+        description="factory equipment",
+    )
+
+    assert result.cohort == "manufacturer"
+    assert result.evidence_keywords == ("factory",)
+    assert result.evidence_fields == ("description",)
 
 
 @pytest.mark.parametrize(
