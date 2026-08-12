@@ -238,6 +238,37 @@ def test_scheduler_rejects_invalid_budgets_and_cap() -> None:
         schedule_candidates(candidate, {"other": 1}, rotation_offset=True)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("budgets", ("other", [("other", 1)], None))
+def test_scheduler_apis_require_budget_mapping(budgets: object) -> None:
+    candidates = [CohortCandidate("a", "other")]
+
+    with pytest.raises(TypeError, match="budget_by_cohort must be a mapping"):
+        schedule_candidates(candidates, budgets)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="budget_by_cohort must be a mapping"):
+        schedule_candidates_detailed(candidates, budgets)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("candidates", ("candidate", b"candidate", bytearray(b"candidate"), 1))
+def test_scheduler_apis_require_candidate_iterable(candidates: object) -> None:
+    budgets = {"other": 1}
+
+    with pytest.raises(TypeError, match="candidates must be a non-string iterable"):
+        schedule_candidates(candidates, budgets)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="candidates must be a non-string iterable"):
+        schedule_candidates_detailed(candidates, budgets)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("invalid", ("candidate", object(), None))
+def test_scheduler_apis_validate_every_candidate_before_attribute_access(invalid: object) -> None:
+    candidates = [CohortCandidate("a", "other"), invalid]
+    budgets = {"other": 1}
+
+    with pytest.raises(TypeError, match="contain only CohortCandidate"):
+        schedule_candidates(candidates, budgets)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="contain only CohortCandidate"):
+        schedule_candidates_detailed(candidates, budgets)  # type: ignore[arg-type]
+
+
 def test_candidate_unknown_cohort_is_normalized_to_other() -> None:
     assert CohortCandidate("x", "alien").cohort == "other"
 
@@ -424,6 +455,23 @@ def test_scheduler_cursor_and_result_deeply_freeze_iterable_inputs() -> None:
     assert hash(result)
 
 
+def test_scheduler_cursor_accepts_json_like_anchor_list() -> None:
+    anchors: list[str | None] = [None] * len(APPROVED_COHORTS)
+    anchors[0] = "  manufacturer-anchor  "
+
+    cursor = SchedulerCursor(candidate_anchors=anchors)
+
+    assert cursor.candidate_anchors == ("manufacturer-anchor",) + (None,) * (
+        len(APPROVED_COHORTS) - 1
+    )
+
+
+@pytest.mark.parametrize("anchors", ("anchors", b"anchors", bytearray(b"anchors")))
+def test_scheduler_cursor_rejects_string_like_anchor_sequences(anchors: object) -> None:
+    with pytest.raises(TypeError, match="candidate_anchors must be a non-string iterable"):
+        SchedulerCursor(candidate_anchors=anchors)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     "anchors",
     (
@@ -448,6 +496,12 @@ def test_scheduler_result_rejects_non_candidates_and_invalid_cursor() -> None:
         SchedulerResult(["not-a-candidate"], SchedulerCursor())  # type: ignore[list-item]
     with pytest.raises(TypeError):
         SchedulerResult([], object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("selected", ("candidate", b"candidate", bytearray(b"candidate")))
+def test_scheduler_result_rejects_string_like_selected_sequences(selected: object) -> None:
+    with pytest.raises(TypeError, match="selected candidates must be a non-string iterable"):
+        SchedulerResult(selected, SchedulerCursor())  # type: ignore[arg-type]
 
 
 def test_discovery_facade_exports_exact_public_api() -> None:

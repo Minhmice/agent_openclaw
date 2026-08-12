@@ -250,6 +250,8 @@ class SchedulerCursor:
             raise TypeError("cursor cohort_index must be an integer")
         if not 0 <= self.cohort_index < len(APPROVED_COHORTS):
             raise ValueError("cursor cohort_index is invalid")
+        if isinstance(self.candidate_anchors, str | bytes | bytearray):
+            raise TypeError("cursor candidate_anchors must be a non-string iterable")
         try:
             anchors = tuple(self.candidate_anchors)
         except TypeError as exc:
@@ -277,6 +279,8 @@ class SchedulerResult:
     next_cursor: SchedulerCursor
 
     def __post_init__(self) -> None:
+        if isinstance(self.selected, str | bytes | bytearray):
+            raise TypeError("selected candidates must be a non-string iterable")
         try:
             selected = tuple(self.selected)
         except TypeError as exc:
@@ -289,6 +293,8 @@ class SchedulerResult:
 
 
 def _validate_budget(budget_by_cohort: Mapping[str, int]) -> dict[str, int]:
+    if not isinstance(budget_by_cohort, Mapping):
+        raise TypeError("budget_by_cohort must be a mapping")
     result: dict[str, int] = {}
     for raw_cohort, budget in budget_by_cohort.items():
         if not isinstance(raw_cohort, str) or not raw_cohort.strip():
@@ -309,9 +315,13 @@ def _validate_budget(budget_by_cohort: Mapping[str, int]) -> dict[str, int]:
 def _candidate_buckets(
     candidates: Iterable[CohortCandidate],
 ) -> dict[str, list[CohortCandidate]]:
+    if isinstance(candidates, str | bytes | bytearray) or not isinstance(candidates, Iterable):
+        raise TypeError("candidates must be a non-string iterable of CohortCandidate values")
     buckets: dict[str, list[CohortCandidate]] = {cohort: [] for cohort in APPROVED_COHORTS}
     queued_by_identity: dict[str, CohortCandidate] = {}
     for candidate in candidates:
+        if not isinstance(candidate, CohortCandidate):
+            raise TypeError("candidates must contain only CohortCandidate values")
         existing = queued_by_identity.get(candidate.identity)
         if existing is None or APPROVED_COHORTS.index(candidate.cohort) < APPROVED_COHORTS.index(
             existing.cohort
