@@ -323,8 +323,8 @@ def _insert_project_parent(db: sqlite3.Connection, project_id: str = "project-1"
 def test_db_package_exports_typed_persistence_errors() -> None:
     assert db_package.__all__ == [
         "ConnectionConfigurationError",
-        "DiscoverySeedDisposition",
         "DiscoverySeedBatch",
+        "DiscoverySeedDisposition",
         "DiscoverySeedUpsertResult",
         "MigrationError",
         "Repository",
