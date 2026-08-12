@@ -4,8 +4,11 @@ business_scoring_overrides:
   local_trust_weight: 1.25
   response_speed_weight: 1.20
 money_scoring_overrides:
-  deal_value_modifier: 0.85
-  purchase_frequency_modifier: 1.20
-  sales_cycle_modifier: 1.25
+  search_demand: 1.20
+  aov_ltv: 0.85
+  trust_dependency: 1.20
+  online_conversion_fit: 1.25
+  business_strength: 1.00
+  web_gap: 1.00
 required_evidence_categories: [service-area, reviews, availability]
 conversion_intent_vocabulary: ["gọi ngay", "đặt lịch", "book service", "contact now"]

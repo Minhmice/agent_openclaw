@@ -9,6 +9,7 @@ from openclaw_web.discovery.scheduler import (
     CohortCandidate,
     allocate_cohort_budget,
     assign_cohort,
+    load_cohort_config,
     schedule_candidates,
 )
 from openclaw_web.models import ClaimStatus
@@ -68,16 +69,22 @@ def test_hospitality_keyword_does_not_match_healthcare_hospital_substring() -> N
     assert result.evidence_keywords == ("hospitality",)
 
 
-@pytest.mark.parametrize("field", ("industry_hint", "name", "description"))
 @pytest.mark.parametrize("cohort", APPROVED_COHORTS)
-def test_exact_approved_cohort_ids_map_to_themselves(field: str, cohort: str) -> None:
-    result = assign_cohort(**{field: cohort})
+def test_exact_approved_industry_hint_maps_to_itself(cohort: str) -> None:
+    result = assign_cohort(industry_hint=cohort)
 
     assert result.cohort == cohort
     assert result.deterministic is True
     assert result.claim_status is ClaimStatus.OBSERVED
     assert result.evidence_keywords == (cohort,)
-    assert result.evidence_fields == (field,)
+    assert result.evidence_fields == ("industry_hint",)
+
+
+def test_exact_name_and_description_use_keyword_precedence() -> None:
+    result = assign_cohort(industry_hint="factory", description="ecommerce")
+    assert result.cohort == "manufacturer"
+    assert result.evidence_keywords == ("factory",)
+    assert result.evidence_fields == ("industry_hint",)
 
 
 @pytest.mark.parametrize(
@@ -182,6 +189,16 @@ def test_deterministic_match_beats_ai_and_ai_requires_inferred_status() -> None:
     assert accepted_ai.deterministic is False
     assert accepted_ai.claim_status is ClaimStatus.INFERRED
     assert rejected_ai.cohort == invalid_ai.cohort == "other"
+    assert rejected_ai.claim_status is ClaimStatus.UNVERIFIED
+    assert rejected_ai.reason == "no_deterministic_or_inferred_cohort_evidence"
+
+
+def test_other_is_observed_only_when_explicitly_present() -> None:
+    observed = assign_cohort(name="other")
+    fallback = assign_cohort(name="Acme")
+    assert observed.claim_status is ClaimStatus.OBSERVED
+    assert observed.evidence_fields == ("name",)
+    assert fallback.claim_status is ClaimStatus.UNVERIFIED
 
 
 def test_scheduler_round_robins_stably_with_caps_deduplication_and_fallback() -> None:
@@ -210,6 +227,37 @@ def test_scheduler_rejects_invalid_budgets_and_cap() -> None:
             schedule_candidates(candidate, budgets, overall_cap=cap)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         schedule_candidates(candidate, {"other": 1}, overall_cap=-1)
+    with pytest.raises(ValueError, match="approved"):
+        schedule_candidates(candidate, {"alien": 1})
+    with pytest.raises((TypeError, ValueError)):
+        schedule_candidates(candidate, {"other": 1}, rotation_offset=True)  # type: ignore[arg-type]
+
+
+def test_candidate_unknown_cohort_is_normalized_to_other() -> None:
+    assert CohortCandidate("x", "alien").cohort == "other"
+
+
+def test_scheduler_order_is_canonical_not_mapping_insertion_order() -> None:
+    candidates = [
+        CohortCandidate("m", "manufacturer"),
+        CohortCandidate("e", "ecommerce"),
+        CohortCandidate("o", "other"),
+    ]
+    canonical = {"manufacturer": 1, "ecommerce": 1, "other": 1}
+    reversed_budget = {"other": 1, "ecommerce": 1, "manufacturer": 1}
+    assert schedule_candidates(candidates, canonical) == schedule_candidates(
+        candidates, reversed_budget
+    )
+
+
+def test_rotation_offset_distributes_overall_cap_without_starvation() -> None:
+    candidates = [CohortCandidate(cohort, cohort) for cohort in APPROVED_COHORTS]
+    budgets = dict.fromkeys(APPROVED_COHORTS, 1)
+    selected = [
+        schedule_candidates(candidates, budgets, overall_cap=1, rotation_offset=offset)[0].cohort
+        for offset in range(len(APPROVED_COHORTS))
+    ]
+    assert selected == list(APPROVED_COHORTS)
 
 
 def test_all_cohort_yaml_contracts_are_strict_and_complete() -> None:
@@ -240,3 +288,62 @@ def test_all_cohort_yaml_contracts_are_strict_and_complete() -> None:
         vocabulary = " ".join(payload["conversion_intent_vocabulary"])
         assert any(ord(character) > 127 for character in vocabulary)
         assert any(term in vocabulary.lower() for term in ("quote", "book", "buy", "contact"))
+        config = load_cohort_config(path)
+        assert config.cohort_id == path.stem
+        assert set(config.money_scoring_overrides) == {
+            "search_demand",
+            "aov_ltv",
+            "trust_dependency",
+            "online_conversion_fit",
+            "business_strength",
+            "web_gap",
+        }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "extra: true\n",
+        "",
+    ),
+)
+def test_cohort_yaml_loader_rejects_extra_or_missing_top_level_keys(
+    tmp_path: Path, mutation: str
+) -> None:
+    source = Path(__file__).parents[2] / "config/scoring/cohorts/manufacturer.yaml"
+    text = source.read_text(encoding="utf-8")
+    if mutation:
+        text += mutation
+    else:
+        text = text.replace("required_evidence_categories:", "removed_categories:")
+    path = tmp_path / "manufacturer.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_cohort_config(path)
+
+
+def test_cohort_yaml_loader_rejects_nonfinite_out_of_bounds_and_duplicate_normalized_text(
+    tmp_path: Path,
+) -> None:
+    source = Path(__file__).parents[2] / "config/scoring/cohorts/manufacturer.yaml"
+    text = source.read_text(encoding="utf-8")
+    text = text.replace("search_demand: 1.00", "search_demand: .inf")
+    text = text.replace(
+        "required_evidence_categories: [products, facilities, certifications]",
+        "required_evidence_categories: [products, ' PRODUCTS ', certifications]",
+    )
+    path = tmp_path / "manufacturer.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_cohort_config(path)
+
+
+def test_cohort_yaml_loader_rejects_undefined_business_modifier(tmp_path: Path) -> None:
+    source = Path(__file__).parents[2] / "config/scoring/cohorts/manufacturer.yaml"
+    text = source.read_text(encoding="utf-8").replace(
+        "operational_scale_weight:", "undefined_business_key:"
+    )
+    path = tmp_path / "manufacturer.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="_weight"):
+        load_cohort_config(path)

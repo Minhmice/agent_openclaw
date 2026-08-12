@@ -4,7 +4,10 @@ import pytest
 
 from openclaw_web.geofence.distance import haversine_km
 from openclaw_web.geofence.service import (
+    AdministrativeFallbackDataset,
+    AdministrativeFallbackEntry,
     Confidence,
+    GeocoderResult,
     GeofenceService,
     LocationEvidence,
 )
@@ -111,6 +114,7 @@ def test_geocoder_error_is_sanitized_and_falls_back() -> None:
     assert result.inside is True
     assert result.confidence is Confidence.MEDIUM
     assert result.reason == "fallback_province_inside"
+    assert result.provider_reason == "geocoder_failed"
     assert "secret" not in result.reason
 
 
@@ -121,7 +125,7 @@ def test_versioned_district_fallback_normalizes_vietnamese_text() -> None:
     assert result.inside is True
     assert result.confidence is Confidence.MEDIUM
     assert result.method == "administrative-fallback"
-    assert result.version == "hanoi-80km-fallback-v1"
+    assert result.version == "hanoi-80km-fallback-v2"
 
 
 def test_broad_or_missing_evidence_is_unresolved_never_assumed_inside() -> None:
@@ -133,3 +137,143 @@ def test_broad_or_missing_evidence_is_unresolved_never_assumed_inside() -> None:
     assert missing.inside is None
     assert missing.confidence is Confidence.LOW
     assert missing.distance_km is None
+
+
+def test_fallback_dataset_is_versioned_immutable_and_bound_to_market() -> None:
+    dataset = AdministrativeFallbackDataset.hanoi_80km()
+    assert dataset.market_id == "hanoi-80km"
+    assert dataset.version == "hanoi-80km-fallback-v2"
+    assert dataset.effective_date == "2025-07-01"
+    assert dataset.admin_system_version
+    assert dataset.source_label
+    assert dataset.content_hash
+    with pytest.raises(AttributeError):
+        dataset.entries += (  # type: ignore[misc]
+            AdministrativeFallbackEntry("ha noi", "fake", True, Confidence.MEDIUM),
+        )
+    copied = AdministrativeFallbackDataset(
+        market_id=dataset.market_id,
+        center_latitude=dataset.center_latitude,
+        center_longitude=dataset.center_longitude,
+        radius_km=dataset.radius_km,
+        version=dataset.version,
+        effective_date=dataset.effective_date,
+        admin_system_version=dataset.admin_system_version,
+        source_label=dataset.source_label,
+        entries=list(dataset.entries),  # type: ignore[arg-type]
+        aliases=list(dataset.aliases),  # type: ignore[arg-type]
+    )
+    assert isinstance(copied.entries, tuple)
+    assert isinstance(copied.aliases, tuple)
+
+    mismatch = GeofenceService(0, 0, 1, fallback_dataset=dataset).evaluate(
+        LocationEvidence(province="Hà Nội", district="Hoàn Kiếm")
+    )
+    assert mismatch.inside is None
+    assert mismatch.confidence is Confidence.LOW
+    assert mismatch.reason == "fallback_market_mismatch"
+
+
+def test_western_quang_ninh_coordinate_wins_but_province_only_is_unknown() -> None:
+    service = GeofenceService(21.0285, 105.8542, 80)
+    coordinate = service.evaluate(LocationEvidence(latitude=21.106, longitude=106.49))
+    province = service.evaluate(LocationEvidence(province="Quảng Ninh"))
+    assert coordinate.inside is True
+    assert coordinate.confidence is Confidence.HIGH
+    assert province.inside is None
+    assert province.reason == "fallback_unknown"
+
+
+@pytest.mark.parametrize(
+    ("province", "district"),
+    (
+        ("Thành phố Hà Nội", "Quận Hoàn Kiếm"),
+        ("TP. Hà Nội", "Q. Hoàn Kiếm"),
+        ("TP Hà Nội", "Q Hoàn Kiếm"),
+    ),
+)
+def test_administrative_prefix_aliases_resolve_known_district(province: str, district: str) -> None:
+    result = GeofenceService(21.0285, 105.8542, 80).evaluate(
+        LocationEvidence(province=province, district=district)
+    )
+    assert result.inside is True
+    assert result.reason == "fallback_district_inside"
+
+
+def test_unknown_current_administrative_unit_is_unresolved() -> None:
+    result = GeofenceService(21.0285, 105.8542, 80).evaluate(
+        LocationEvidence(province="TP Hà Nội", district="Phường Không Có Thật")
+    )
+    assert result.inside is None
+    assert result.reason == "fallback_unknown"
+
+
+@pytest.mark.parametrize(
+    ("geocoder", "expected_reason"),
+    (
+        (None, "geocoder_unconfigured"),
+        (lambda _address: None, "geocoder_no_match"),
+        (lambda _address: (999, 999), "geocoder_invalid_result"),
+        (lambda _address: (21.0,), "geocoder_invalid_result"),
+        (lambda _address: (None, 105.0), "geocoder_invalid_result"),
+    ),
+)
+def test_geocoder_failure_reasons_are_exact_without_fallback(
+    geocoder: object, expected_reason: str
+) -> None:
+    result = GeofenceService(21.0285, 105.8542, 80, geocoder=geocoder).evaluate(  # type: ignore[arg-type]
+        LocationEvidence(address="Địa chỉ không xác định")
+    )
+    assert result.inside is None
+    assert result.reason == expected_reason
+    assert result.method == "unresolved"
+
+
+def test_tuple_geocoder_is_medium_confidence_for_backwards_compatibility() -> None:
+    result = GeofenceService(
+        21.0285,
+        105.8542,
+        80,
+        geocoder=lambda _address: (21.03, 105.85),
+    ).evaluate(LocationEvidence(address="Hà Nội"))
+    assert result.inside is True
+    assert result.confidence is Confidence.MEDIUM
+    assert result.geocoder_source == "legacy-tuple"
+
+
+def test_structured_geocoder_preserves_provenance_and_boundary_uncertainty() -> None:
+    radius = haversine_km(0, 0, 0, 1)
+    result = GeofenceService(
+        0,
+        0,
+        radius,
+        geocoder=lambda _address: GeocoderResult(
+            latitude=0,
+            longitude=1,
+            precision="street",
+            source="approved-provider",
+            accuracy_km=0.5,
+        ),
+        fallback_dataset=None,
+    ).evaluate(LocationEvidence(address="near boundary"))
+    assert result.inside is None
+    assert result.confidence is Confidence.LOW
+    assert result.reason == "geocoded_boundary_uncertain"
+    assert result.geocoder_source == "approved-provider"
+    assert result.geocoder_precision == "street"
+
+
+def test_structured_geocoder_without_uncertainty_is_medium_confidence() -> None:
+    result = GeofenceService(
+        21.0285,
+        105.8542,
+        80,
+        geocoder=lambda _address: GeocoderResult(
+            latitude=21.0285,
+            longitude=105.8542,
+            precision="rooftop",
+            source="approved-provider",
+        ),
+    ).evaluate(LocationEvidence(address="Hà Nội"))
+    assert result.inside is True
+    assert result.confidence is Confidence.MEDIUM

@@ -4,8 +4,11 @@ business_scoring_overrides:
   merchandising_weight: 1.20
   checkout_clarity_weight: 1.30
 money_scoring_overrides:
-  deal_value_modifier: 0.95
-  purchase_frequency_modifier: 1.30
-  sales_cycle_modifier: 1.30
+  search_demand: 1.25
+  aov_ltv: 0.95
+  trust_dependency: 1.10
+  online_conversion_fit: 1.30
+  business_strength: 1.10
+  web_gap: 1.20
 required_evidence_categories: [products, pricing, fulfillment]
 conversion_intent_vocabulary: ["mua ngay", "thêm vào giỏ", "buy now", "checkout"]
