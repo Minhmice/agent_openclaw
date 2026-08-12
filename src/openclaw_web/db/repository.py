@@ -391,27 +391,31 @@ class Repository:
                 )
             else:
                 persisted = self._candidate_from_row(row)
-                persisted_address = row["normalized_address"]
-                contradictory = matched_domain and (
-                    str(row["normalized_name"]) != normalized_name
+                disposition = DiscoverySeedDisposition.DUPLICATE
+            for observation in observations:
+                observation_address = (
+                    _normalize_match_text(observation.address)
+                    if observation.address is not None
+                    else None
+                )
+                persisted_address = row["normalized_address"] if row is not None else None
+                contradictory = row is not None and matched_domain and (
+                    str(row["normalized_name"])
+                    != _normalize_match_text(observation.business_name)
                     or (
                         persisted_address is not None
-                        and normalized_address is not None
-                        and str(persisted_address) != normalized_address
+                        and observation_address is not None
+                        and str(persisted_address) != observation_address
                     )
                 )
-                disposition = (
-                    DiscoverySeedDisposition.CONFLICT
-                    if contradictory
-                    else DiscoverySeedDisposition.DUPLICATE
-                )
-            for observation in observations:
+                if contradictory:
+                    disposition = DiscoverySeedDisposition.CONFLICT
                 self._append_discovery_seed_source(
                     persisted.candidate_id,
                     canonical_domain,
                     observation,
                     normalized_cohort,
-                    conflict=disposition is DiscoverySeedDisposition.CONFLICT,
+                    conflict=contradictory,
                 )
 
         return DiscoverySeedUpsertResult(disposition, persisted)

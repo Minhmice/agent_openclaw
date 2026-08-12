@@ -169,6 +169,51 @@ def test_discovery_batch_persists_each_actual_source_observation_with_its_timest
     }
 
 
+def test_discovery_batch_marks_only_each_contradictory_observation_as_conflict(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    existing = _seed("https://example.com", "Example", "Hà Nội")
+    matching = existing.validated_replace(
+        source_url="https://directory.example/matching",
+        source_type="serper",
+    )
+    contradictory = matching.validated_replace(
+        business_name="Different business",
+        address="Đà Nẵng",
+        source_url="https://directory.example/contradictory",
+        source_type="google-places",
+    )
+    assert (
+        repo.upsert_discovery_seed(existing, "other").disposition
+        is DiscoverySeedDisposition.INSERTED
+    )
+
+    result = repo.upsert_discovery_seed(
+        DiscoverySeedBatch(seed=matching, observations=(matching, contradictory)), "other"
+    )
+    rows = db.execute(
+        "SELECT source_url, conflict, snapshot_json FROM candidate_sources "
+        "WHERE source_url IN (?, ?) ORDER BY source_url",
+        (str(matching.source_url), str(contradictory.source_url)),
+    ).fetchall()
+
+    assert result.disposition is DiscoverySeedDisposition.CONFLICT
+    assert [
+        (
+            row["source_url"],
+            row["conflict"],
+            json.loads(row["snapshot_json"])["candidate_seed"]["business_name"],
+        )
+        for row in rows
+    ] == [
+        ("https://directory.example/contradictory", 1, "Different business"),
+        ("https://directory.example/matching", 0, "Example"),
+    ]
+
+
 def _evidence(*, evidence_id: str = "evidence-1", observed_value: str = "fast") -> Evidence:
     return Evidence(
         evidence_id=evidence_id,
