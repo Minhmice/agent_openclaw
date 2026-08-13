@@ -196,6 +196,10 @@ if [[ -e "$release" ]] && ! release_is_usable "$release"; then
     echo "existing current release is incomplete" >&2
     exit 2
   fi
+  # A failed install may have frozen its plugin directory before a later
+  # validation error. It is safe to make only this inactive stale release
+  # writable before removing it; active/current releases fail closed above.
+  chmod -R u+w "$release" 2>/dev/null || true
   rm -rf -- "$release"
 fi
 if [[ ! -e "$release" ]]; then
