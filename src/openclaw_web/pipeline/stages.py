@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
 GENERATOR_VERSION = "pipeline-v1"
 
 
