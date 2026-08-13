@@ -148,6 +148,43 @@ test("registers one deterministic Discord interactive namespace", () => {
   assert.equal(typeof registration.handler, "function");
 });
 
+test("uses the approved guild when the gateway omits the non-secret env value", async () => {
+  const previousGuildId = process.env.OPENCLAW_WEB_DISCORD_GUILD_ID;
+  delete process.env.OPENCLAW_WEB_DISCORD_GUILD_ID;
+  try {
+    const observed = makeApi();
+    const callbacks = [];
+    const replies = [];
+    createOpenClawWebPlugin({
+      async runCallback(envelope) {
+        callbacks.push(envelope);
+        return { message_vi: "Đã ghi nhận thao tác." };
+      },
+    }).register(observed.api);
+
+    const result = await observed.registration().handler(
+      callbackContext("project:project-1:approve", replies),
+    );
+
+    assert.deepEqual(callbacks, [
+      {
+        actor_id: MINH_ID,
+        guild_id: GUILD_ID,
+        message_id: MESSAGE_ID,
+        value: "project:project-1:approve",
+      },
+    ]);
+    assert.deepEqual(replies, [{ text: "Đã ghi nhận thao tác.", ephemeral: true }]);
+    assert.deepEqual(result, { handled: true });
+  } finally {
+    if (previousGuildId === undefined) {
+      delete process.env.OPENCLAW_WEB_DISCORD_GUILD_ID;
+    } else {
+      process.env.OPENCLAW_WEB_DISCORD_GUILD_ID = previousGuildId;
+    }
+  }
+});
+
 test("registers the fixed openclaw-web send CLI root", () => {
   const observed = makeApi();
 

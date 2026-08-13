@@ -15,6 +15,10 @@ try {
 
 const PLUGIN_ID = "openclaw-web-components";
 const NAMESPACE = "openclaw-web";
+// This is a non-secret deployment identifier. Keep a safe default so inbound
+// gateway callbacks remain verifiable even when the gateway does not inherit
+// the discovery service's environment file.
+const DEFAULT_GUILD_ID = "1446612692910739637";
 const DEFAULT_COMMAND =
   `${process.env.HOME ?? ""}/.local/share/openclaw-web/current/venv/bin/openclaw-web`;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -370,7 +374,7 @@ export function runComponentCallback(
 }
 
 export function createOpenClawWebPlugin({
-  guildId = process.env.OPENCLAW_WEB_DISCORD_GUILD_ID,
+  guildId = process.env.OPENCLAW_WEB_DISCORD_GUILD_ID ?? DEFAULT_GUILD_ID,
   readOutboundInput = readBoundedUtf8,
   runCallback = runComponentCallback,
   writeOutboundOutput = (text) => process.stdout.write(text),
