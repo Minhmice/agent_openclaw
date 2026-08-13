@@ -107,10 +107,30 @@ done
   exit 2
 }
 
-# Validate staged units before touching the timer or any installed target.
-systemd-analyze --user verify \
-  "$source_root/deploy/openclaw-web-discovery.service" \
-  "$source_root/deploy/openclaw-web-discovery.timer"
+# Validate staged units before touching the timer or any installed target. The
+# service points at the immutable `current` release, which may not exist on a
+# first install, so verify an equivalent temporary unit with safe placeholder
+# runtime paths. The installed unit is verified again after its pointer exists.
+verify_staged_units() {
+  local verify_dir
+  verify_dir=$(mktemp -d)
+  sed \
+    -e '/^EnvironmentFile=/d' \
+    -e 's#^WorkingDirectory=.*$#WorkingDirectory=/tmp#' \
+    -e 's#^ExecStart=.*$#ExecStart=/bin/true#' \
+    "$source_root/deploy/openclaw-web-discovery.service" \
+    > "$verify_dir/openclaw-web-discovery.service"
+  cp "$source_root/deploy/openclaw-web-discovery.timer" \
+    "$verify_dir/openclaw-web-discovery.timer"
+  if ! systemd-analyze --user verify \
+    "$verify_dir/openclaw-web-discovery.service" \
+    "$verify_dir/openclaw-web-discovery.timer"; then
+    rm -rf -- "$verify_dir"
+    return 1
+  fi
+  rm -rf -- "$verify_dir"
+}
+verify_staged_units
 openclaw plugins validate --entry "$source_root/deploy/openclaw-web-plugin/index.js" >/dev/null
 openclaw config validate >/dev/null
 
