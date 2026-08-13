@@ -1,5 +1,17 @@
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { TextDecoder } from "node:util";
+
+const require = createRequire(import.meta.url);
+let definePluginEntry;
+try {
+  ({ definePluginEntry } = require("openclaw/plugin-sdk/plugin-entry"));
+} catch {
+  // The peer package is supplied by OpenClaw on the host. Keeping a local
+  // identity fallback lets the pure bridge tests run without installing the
+  // host application; the remote installer still validates the real helper.
+  definePluginEntry = (entry) => entry;
+}
 
 const PLUGIN_ID = "openclaw-web-components";
 const NAMESPACE = "openclaw-web";
@@ -363,7 +375,7 @@ export function createOpenClawWebPlugin({
   runCallback = runComponentCallback,
   writeOutboundOutput = (text) => process.stdout.write(text),
 } = {}) {
-  return {
+  return definePluginEntry({
     id: PLUGIN_ID,
     name: "OpenClaw Web Components",
     description: "Deterministic Discord Components bridge for website review.",
@@ -417,7 +429,7 @@ export function createOpenClawWebPlugin({
         },
       });
     },
-  };
+  });
 }
 
 export default createOpenClawWebPlugin();
