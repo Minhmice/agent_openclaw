@@ -42,6 +42,7 @@ def test_delivery_retry_does_not_duplicate_sent_message(tmp_path: Path) -> None:
 
     assert transport.call_count == 1
     assert worker.get(record.delivery_id).status is DeliveryState.SENT
+    repository.close()
 
 
 def test_delivery_failure_retries_once_then_remains_failed(tmp_path: Path) -> None:
@@ -64,3 +65,4 @@ def test_delivery_failure_retries_once_then_remains_failed(tmp_path: Path) -> No
     result = worker.get("delivery-1")
     assert result.status is DeliveryState.FAILED
     assert result.attempt_count == 2
+    repository.close()

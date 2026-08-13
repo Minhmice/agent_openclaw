@@ -14,7 +14,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(os.environ.get("OPENCLAW_WORKFLOW_ROOT", "/home/minhmice/.openclaw/workflow"))
 PROJECTS = ROOT / "projects"
 STATE = ROOT / "state"
@@ -50,7 +49,7 @@ PAGE_STATES = {
 
 
 def now() -> str:
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
 def safe_id(value: str) -> str:
@@ -384,7 +383,7 @@ def cmd_discard(args: argparse.Namespace) -> None:
 
 
 def collect_due(stale_minutes: int) -> list[dict[str, Any]]:
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=stale_minutes)
+    cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=stale_minutes)
     due: list[dict[str, Any]] = []
     if not PROJECTS.exists():
         return due
@@ -397,7 +396,7 @@ def collect_due(stale_minutes: int) -> list[dict[str, Any]]:
         stale = True
         if last:
             try:
-                stale = dt.datetime.fromisoformat(last).replace(tzinfo=dt.timezone.utc) <= cutoff
+                stale = dt.datetime.fromisoformat(last).replace(tzinfo=dt.UTC) <= cutoff
             except ValueError:
                 stale = True
         pending = [
@@ -478,10 +477,10 @@ def should_send_reminder(project: dict[str, Any], signature: str, cooldown_minut
     try:
         last_at = dt.datetime.fromisoformat(last_sent)
         if last_at.tzinfo is None:
-            last_at = last_at.replace(tzinfo=dt.timezone.utc)
+            last_at = last_at.replace(tzinfo=dt.UTC)
     except ValueError:
         return True
-    return dt.datetime.now(dt.timezone.utc) - last_at >= dt.timedelta(minutes=cooldown_minutes)
+    return dt.datetime.now(dt.UTC) - last_at >= dt.timedelta(minutes=cooldown_minutes)
 
 
 def cmd_due(args: argparse.Namespace) -> None:

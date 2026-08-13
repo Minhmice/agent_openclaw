@@ -41,7 +41,7 @@ Default authority:
 - Wien can update task/page progress and mark assigned work complete.
 - Final project handoff requires both Minh and Wien to confirm completion, unless Minh explicitly overrides this rule.
 
-If Discord buttons are unavailable in the current OpenClaw channel tool, use explicit typed commands with the same state transitions, for example `/approve <project>`, `/page-done <project> <page>`, and `/finalize <project>`.
+Review, page, and final cards use Discord Components v2 when the runtime supports them. Each callback is checked against the bot-owned `channel_id`, `message_id`, `project_id`, `state_version`, expiry, and actor allowlist before the coordinator runs. If a card is stale, expired, unsupported, or rejected by validation, use the typed fallback commands with the same state transitions: `/approve <project_id>`, `/page-done <project_id> <page_slug>`, `/page-approve <project_id> <page_slug>`, and `/final-confirm <project_id>`.
 
 ## Reminder policy
 

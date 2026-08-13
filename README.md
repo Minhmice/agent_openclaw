@@ -4,6 +4,8 @@ Operational runbook for the OpenClaw instance hosted at `100.121.246.38`.
 
 This repository is intentionally documentation-first. It does not contain the remote OpenClaw application source. A new agent should start with this file and [AGENTS.md](AGENTS.md), load access credentials from its environment or secret provider, inspect the live host, and then follow the approval-gated change workflow below.
 
+Local website discovery/audit implementation details, Components v2 behavior, typed fallbacks, cron, retention, and rollback are documented in [docs/runbooks/web-audit-discovery.md](docs/runbooks/web-audit-discovery.md).
+
 ## Quick start for a new agent
 
 ### 1. Load non-secret connection metadata

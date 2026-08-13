@@ -74,7 +74,7 @@ Use the coordinator script at `/home/minhmice/.openclaw/workflow/workflow-coordi
 /final-confirm <project_id>
 ```
 
-The current Discord capability does not expose native buttons/components. Treat typed commands as canonical. Accept a reaction only if the original message, actor, and project state can be verified; otherwise ask for the typed command.
+Discord Components v2 are preferred when `agentComponents.enabled` is supported. Treat the component callback and typed command as two input encodings for the same coordinator transition: both must validate actor, channel, bot-owned message, project, state version, expiry, checklist, and P0/P1 gates. If feature detection fails or a callback is stale, return the exact typed fallback command. Never accept an unverified reaction as approval.
 
 ## Handoff messages
 

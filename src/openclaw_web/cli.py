@@ -1,6 +1,8 @@
 """Command-line contract for the website discovery and audit workflow."""
 
+import json
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Protocol
 
 import typer
@@ -55,18 +57,48 @@ def _run_service(dependency: str) -> None:
         raise typer.Exit(code=2) from exc
 
 
+def _emit(payload: Mapping[str, object], *, json_output: bool) -> None:
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    else:
+        for key, value in payload.items():
+            typer.echo(f"{key}: {value}")
+
+
 @app.command(help="Kiem tra tinh trang cac dependency cua workflow.")
-def health() -> None:
+def health(json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted.")) -> None:
+    if json_output:
+        from openclaw_web.health import HealthService, HealthSettings
+
+        report = HealthService(HealthSettings(Path(".openclaw-web-artifacts"))).check()
+        _emit({
+            "manual_audit_ready": report.manual_audit_ready,
+            "discovery_ready": report.discovery_ready,
+            "checks": report.checks,
+        }, json_output=True)
+        return
     _run_service("health")
 
 
 @app.command(help="Danh gia mot website va tao ho so bang chung.")
-def audit() -> None:
+def audit(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Chi kiem tra wiring, khong crawl."),
+    json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
+) -> None:
+    if dry_run:
+        _emit({"command": "audit", "status": "dry-run", "external_io": False}, json_output=json_output)
+        return
     _run_service("audit")
 
 
 @app.command(help="Kham pha doanh nghiep va website trong thi truong da chon.")
-def discover() -> None:
+def discover(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Chi kiem tra market/geofence, khong goi provider."),
+    json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
+) -> None:
+    if dry_run:
+        _emit({"command": "discover", "status": "dry-run", "market": "hanoi-80km", "external_io": False}, json_output=json_output)
+        return
     _run_service("discover")
 
 
@@ -96,7 +128,13 @@ def delivery() -> None:
 
 
 @app.command("cron-run", help="Chay discovery dinh ky voi khoa chong chay trung.")
-def cron_run() -> None:
+def cron_run(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Khong acquire lock, crawl hoac gui Discord."),
+    json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
+) -> None:
+    if dry_run:
+        _emit({"command": "cron-run", "status": "dry-run", "market": "hanoi-80km", "external_io": False}, json_output=json_output)
+        return
     _run_service("cron-run")
 
 

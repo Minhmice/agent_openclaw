@@ -36,3 +36,4 @@ def test_calibration_report_groups_reject_reasons_without_mutating_rubric(tmp_pa
     assert report.reject_reasons == {"business-too-weak": 1}
     assert report.score_distribution == {"70-79": 1, "80-89": 1}
     assert report.threshold_simulation[75]["qualified"] == 2
+    repository.close()

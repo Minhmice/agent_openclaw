@@ -1,12 +1,11 @@
-import json
 import importlib.util
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-
 
 SCRIPT = Path(__file__).parents[1] / "agents" / "shared" / "workflow-coordinator.py"
 MINH = "620891893659598850"
@@ -49,6 +48,7 @@ class WorkflowCoordinatorTests(unittest.TestCase):
             env=env,
             text=True,
             capture_output=True,
+            check=False,
         )
 
     def load_project(self):

@@ -42,6 +42,28 @@ def test_cli_help_succeeds() -> None:
     assert result.exit_code == 0
 
 
+def test_health_json_reports_manual_readiness_without_registry() -> None:
+    result = CliRunner().invoke(cli.app, ["health", "--json"])
+
+    assert result.exit_code == 0
+    assert '"manual_audit_ready":true' in result.output
+
+
+def test_cron_dry_run_is_offline_and_does_not_require_registry() -> None:
+    result = CliRunner().invoke(cli.app, ["cron-run", "--dry-run", "--json"])
+
+    assert result.exit_code == 0
+    assert '"status":"dry-run"' in result.output
+
+
+@pytest.mark.parametrize("command", ["discover", "audit"])
+def test_local_dry_run_commands_are_offline(command: str) -> None:
+    result = CliRunner().invoke(cli.app, [command, "--dry-run", "--json"])
+
+    assert result.exit_code == 0
+    assert '"status":"dry-run"' in result.output
+
+
 @pytest.mark.parametrize("command", COMMANDS)
 def test_each_default_command_reports_its_missing_dependency(command: str) -> None:
     result = CliRunner().invoke(cli.app, [command])

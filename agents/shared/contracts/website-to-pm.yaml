@@ -6,7 +6,7 @@ required:
     project_id: "stable-slug"
     business_name: "string"
     website_url: "https://example.com"
-    approved_by: "620891893659598850"
+    approved_by: "620891893659598850 | 859783610625556480"
     approved_at: "ISO-8601"
   artifacts:
     redesign_brief: "path/to/redesign-brief.json"
@@ -47,5 +47,6 @@ optional:
     - "string"
 rules:
   - PM must not start a project from a URL alone.
+  - Review approval may be recorded from Minh ("620891893659598850") or Wien ("859783610625556480").
   - Every page needs a role, audience, conversion intent, sections, owner, target day, and evidence/claim status.
   - No page becomes approved with unsupported claims or unresolved P0/P1 issues.
