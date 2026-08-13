@@ -38,7 +38,6 @@ from openclaw_web.scoring.rules import Rubric, load_rubric
 from openclaw_web.screenshots import ScreenshotRunner
 from openclaw_web.settings import MarketConfig, load_market
 
-
 DEFAULT_DISCORD_GUILD_ID = "1446612692910739637"
 
 

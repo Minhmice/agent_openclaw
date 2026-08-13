@@ -2,6 +2,42 @@
 
 This file records every implementation/review session for the OpenClaw multi-agent workflow. Never put passwords, tokens, private keys, cookies, provider secrets, or session content here.
 
+## 2026-08-14 — Web audit P0/P1 remote deployment and controlled smoke
+
+### Deployment
+
+- Installed immutable web-audit release `5dbbec8df89eade60c8865b3648aff1abbb5a6dd448670455448a37db03d0695` from staging v10.
+- Backup checkpoint: `/home/minhmice/.openclaw/backups/web-audit-20260814-0730`.
+- Previous deployment checkpoint: `/home/minhmice/.openclaw/backups/web-audit-20260814-0700`.
+- Discovery timer remains `disabled`/`inactive`; no cron enablement or automatic run was performed.
+- `openclaw config validate`, plugin runtime inspect, gateway status, Discord probe, and systemd unit verification passed after gateway restart.
+- Primary model remains `9router/openclaw`; provider timeout is already `300` seconds; no model/fallback or security policy change was made.
+
+### Native button bridge
+
+- Plugin fallback uses the approved non-secret guild ID when the gateway process does not inherit the discovery service environment file.
+- Python callback validation has the same deterministic fallback; regression tests cover both plugin and callback subprocess paths.
+- Isolated callback smoke with the guild environment unset returned `read-only` successfully and did not touch production state.
+- Components configuration is enabled with `ttlMs=86400000`; owner and exec approvers contain Minh and Wien only.
+
+### Controlled live smoke
+
+- Overpass read-only discovery was bounded to five seeds per cohort and safety-filtered around Hà Nội.
+- Pipeline smoke used one provider result, one discovered candidate, at most three crawl pages, and one full audit.
+- Live candidates (`ruavatho.vn`, `luatthienthanh.vn`, `luatgiapham.com`, `luatsuhanoi.vn`) failed the defensibility gate due to unsafe crawl targets or insufficient public evidence; no review card, project, delivery, or component set was created.
+- Remote state after smoke: `projects=0`, `deliveries=0`, `component_sets=0`, no pending outbox.
+- Minh and Wien were not impersonated and no approval click was simulated. Timer must remain off until a real review card is delivered and both users manually verify the native button path.
+
+### Verification limitations
+
+- Local focused gates passed: Node plugin `20/20`; runtime/OpenClaw plugin tests `20/20`; crawler integration `39/39`; production integration `9/9`; screenshot integration `8/8` (real Chromium smoke excluded); unit tests through `test_overpass.py` passed.
+- `tests/unit/test_remote_installer_harness.py` hung under the Windows/bash harness and was stopped after a 180-second timeout; the live installer itself passed `install_verified=offline` on both v8 and v10.
+- Full repository suite should be rerun in a Linux/bash-compatible test environment before declaring the local test matrix completely green.
+
+### Rollback
+
+Use the deployment checkpoint with `deploy/rollback-remote.sh` if a later manual verification exposes a problem. Do not delete the backup or enable the timer until the native button smoke is completed by Minh and Wien.
+
 ## 2026-08-11 — Remote sync attempt after credential handoff
 
 ### Request
