@@ -39,6 +39,9 @@ from openclaw_web.screenshots import ScreenshotRunner
 from openclaw_web.settings import MarketConfig, load_market
 
 
+DEFAULT_DISCORD_GUILD_ID = "1446612692910739637"
+
+
 def _state_db() -> Path:
     configured = os.environ.get("OPENCLAW_WEB_STATE_DB")
     return Path(configured).expanduser() if configured else Path.home() / ".local/state/openclaw-web/state.sqlite"
@@ -247,7 +250,9 @@ def _strict_callback_json(text: str) -> dict[str, str]:
         or len(result["value"].encode("utf-8")) > 512
     ):
         raise ValueError("invalid component callback envelope")
-    configured_guild = os.environ.get("OPENCLAW_WEB_DISCORD_GUILD_ID", "")
+    configured_guild = os.environ.get(
+        "OPENCLAW_WEB_DISCORD_GUILD_ID", DEFAULT_DISCORD_GUILD_ID
+    )
     if result["guild_id"] != configured_guild:
         raise ValueError("invalid component callback envelope")
     return result

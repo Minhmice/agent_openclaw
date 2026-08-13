@@ -367,6 +367,54 @@ def test_component_callback_resolves_canonical_identity_by_message_id(
     assert result["fallback_command"] == "/refresh project-callback"
 
 
+def test_component_callback_uses_approved_guild_when_gateway_env_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_db = tmp_path / "state.sqlite"
+    workflow_root = tmp_path / "workflow"
+    project_dir = workflow_root / "projects/project-default-guild"
+    project_dir.mkdir(parents=True)
+    (project_dir / "project.json").write_text(
+        '{"project_id":"project-default-guild","status":"review","state_version":0,'
+        '"pages":[],"final_confirmations":{}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCLAW_WEB_STATE_DB", str(state_db))
+    monkeypatch.setenv("OPENCLAW_WORKFLOW_ROOT", str(workflow_root))
+    monkeypatch.delenv("OPENCLAW_WEB_DISCORD_GUILD_ID", raising=False)
+    connection = connect(state_db)
+    migrate(connection)
+    repository = Repository(connection)
+    connection.execute(
+        "INSERT INTO projects (project_id, candidate_id, state, state_version, snapshot_json) "
+        "VALUES ('project-default-guild', NULL, 'review', 0, '{}')"
+    )
+    repository.insert_component_set(
+        ComponentSet(
+            component_set_id="set-default-guild",
+            message_id="1537000000000000003",
+            channel_id="1536658476288450630",
+            project_id="project-default-guild",
+            card_type="review",
+            allowed_actions=["refresh"],
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            state_version=0,
+            project_state=ProjectState.REVIEW,
+        )
+    )
+    connection.close()
+
+    result = run_component_callback(
+        '{"actor_id":"620891893659598850",'
+        '"guild_id":"1446612692910739637",'
+        '"message_id":"1537000000000000003",'
+        '"value":"project:project-default-guild:refresh"}'
+    )
+
+    assert result["status"] == "read-only"
+    assert "project-default-guild" in result["message_vi"]
+
+
 def test_component_callback_rejects_forged_project_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
