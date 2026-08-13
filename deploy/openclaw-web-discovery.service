@@ -1,0 +1,9 @@
+[Unit]
+Description=OpenClaw website discovery run
+After=network-online.target openclaw-gateway.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/openclaw-web/env
+ExecStart=%h/.local/share/openclaw-web/venv/bin/openclaw-web cron-run
+TimeoutStartSec=3h15m
