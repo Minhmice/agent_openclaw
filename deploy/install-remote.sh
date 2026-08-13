@@ -419,7 +419,8 @@ printf '%s\n' \
   "OPENCLAW_WEB_SCORING_CONFIG=$workflow/config/scoring/base-v1.yaml" \
   "OPENCLAW_WORKFLOW_ROOT=$workflow" \
   "OPENCLAW_WEB_DISCORD_GUILD_ID=1446612692910739637" \
-  "OPENCLAW_WEB_REVIEW_CHANNEL_ID=1536658476288450630" > "$env_tmp"
+  "OPENCLAW_WEB_REVIEW_CHANNEL_ID=1536658476288450630" \
+  "PATH=$HOME/.local/share/openclaw-web/tools/node_modules/.bin:/usr/local/bin:/usr/bin:/bin" > "$env_tmp"
 chmod 0600 "$env_tmp"
 mv -f "$env_tmp" "$env_file"
 [[ "$(stat -c '%a' "$env_file")" == "600" ]] || {
