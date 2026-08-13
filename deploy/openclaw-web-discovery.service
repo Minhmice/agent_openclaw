@@ -5,5 +5,7 @@ After=network-online.target openclaw-gateway.service
 [Service]
 Type=oneshot
 EnvironmentFile=%h/.config/openclaw-web/env
-ExecStart=%h/.local/share/openclaw-web/venv/bin/openclaw-web cron-run
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=%h/.local/share/openclaw-web/current
+ExecStart=%h/.local/share/openclaw-web/current/venv/bin/openclaw-web cron-run --json
 TimeoutStartSec=3h15m

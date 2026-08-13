@@ -74,7 +74,7 @@ Read-only investigation is allowed while discussing. The following always requir
 
 ### Discord owner and exec-approval parity
 
-If Minh and Wien must have the same OpenClaw owner and Discord exec-approval rights, configure both Discord IDs in both authorization layers. The workflow coordinator's `/approve` permission is separate and does not grant OpenClaw host-exec approval.
+If Minh and Wien must have the same OpenClaw owner and Discord exec-approval rights, configure both Discord IDs in both authorization layers. Project approval uses verified Discord buttons or `/lead-approve`; `/approve` is reserved for OpenClaw host-exec approval.
 
 The intended non-secret shape is:
 

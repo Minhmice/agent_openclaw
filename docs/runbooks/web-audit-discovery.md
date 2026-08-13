@@ -57,7 +57,7 @@ Actor allowlist:
 Nếu OpenClaw không expose Components v2, card hết hạn, hoặc callback không verify được, dùng đúng typed fallback:
 
 ```text
-/approve <project_id>
+/lead-approve <project_id>
 /reject <project_id> <reason>
 /request-change <project_id> <note>
 /page-status <project_id> <page_slug>
@@ -67,7 +67,7 @@ Nếu OpenClaw không expose Components v2, card hết hạn, hoặc callback kh
 /final-confirm <project_id>
 ```
 
-Không coi reaction hoặc payload thiếu actor/message identity là approval. `/approve` của workflow coordinator chỉ đổi project state; nó không cấp OpenClaw host exec approval.
+Không coi reaction hoặc payload thiếu actor/message identity là approval. Project approval chỉ đi qua nút đã verify hoặc `/lead-approve`; `/approve` được dành riêng cho OpenClaw host exec approval.
 
 ## Cron, lock, health và retention
 
@@ -80,6 +80,10 @@ Retention chỉ xóa screenshot/run log của candidate bị reject đã hết h
 ## Backup, rollback và remote boundary
 
 Trước mọi remote mutation phải có approval cho đúng scope, sau đó backup timestamped các file bị đổi, giữ nguyên owner/mode. Rollback phải dùng đúng timestamp tương ứng, restore workflow/config đã backup, validate lại OpenClaw và không chạm DB/artifact approved.
+
+`deploy/install-remote.sh` tạo release theo hash của wheel. Ba file của plugin `openclaw-web-components` được copy vào release với mode chỉ đọc; extension path chỉ là symlink tới plugin trong release đó. Installer backup từng target bằng manifest có loại file, hash và mode, rồi merge có mục tiêu vào `plugins.allow`, `plugins.entries.openclaw-web-components.enabled` và `channels.discord.agentComponents.ttlMs=86400000`. Sau mỗi config write phải chạy `openclaw config validate`; không in config hoặc secret. Installer luôn để `openclaw-web-discovery.timer` ở trạng thái `disabled`/`inactive`, không enable timer và không restart gateway.
+
+`deploy/rollback-remote.sh <backup-root>` chỉ nhận backup nằm dưới `~/.openclaw/backups/`. Trước khi stop timer/service hoặc sửa file, script kiểm tra toàn bộ backup payload, hash/mode của file đã deploy, plugin asset bất biến, symlink và trạng thái timer đang bị freeze. Nếu có drift, rollback dừng trước mutation. Sau restore, script verify systemd unit, OpenClaw config, health và Discord probe; chỉ khi các bước này pass mới restore đúng trạng thái timer đã lưu và kiểm tra lại trạng thái cuối.
 
 Remote preflight chỉ đọc:
 
@@ -98,7 +102,7 @@ openclaw channels status --channel discord --probe
 openclaw update status
 ```
 
-Chỉ sau preflight và approval cụ thể mới cân nhắc cài package, copy workflow, cài user service/timer, sửa OpenClaw config hoặc restart gateway. Không chạy `openclaw security audit --fix`, `openclaw doctor --repair`, package update, firewall change, credential rotation hay mở port `18789` trong workflow này.
+Chỉ sau preflight và approval cụ thể mới cân nhắc cài package, copy workflow, cài user service/timer hoặc sửa OpenClaw config. Deployment này không restart gateway và không enable timer; nếu một live smoke sau đó cần làm việc đó thì phải có approval riêng. Không chạy `openclaw security audit --fix`, `openclaw doctor --repair`, package update, firewall change, credential rotation hay mở port `18789` trong workflow này.
 
 ## Timeout model/provider
 

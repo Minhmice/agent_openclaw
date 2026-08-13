@@ -31,6 +31,12 @@ from openclaw_web.discovery.batch import (
 from openclaw_web.discovery.batch import (
     ManualUrlDiscoverySource as ManualUrlDiscoverySource,
 )
+from openclaw_web.discovery.overpass import (
+    OverpassDiscoveryProvider as OverpassDiscoveryProvider,
+)
+from openclaw_web.discovery.overpass import (
+    OverpassDiscoverySource as OverpassDiscoverySource,
+)
 from openclaw_web.discovery.places import (
     GooglePlacesDiscoveryProvider as GooglePlacesDiscoveryProvider,
 )
@@ -91,6 +97,8 @@ __all__ = [
     "GooglePlacesDiscoverySource",
     "JsonDiscoverySource",
     "ManualUrlDiscoverySource",
+    "OverpassDiscoveryProvider",
+    "OverpassDiscoverySource",
     "SchedulerCursor",
     "SchedulerResult",
     "SerperDiscoveryProvider",

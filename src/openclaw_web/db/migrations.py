@@ -225,7 +225,50 @@ _MIGRATION_1 = Migration(
     ),
 )
 
-_MIGRATIONS = (_MIGRATION_1,)
+_MIGRATION_2 = Migration(
+    version=2,
+    statements=(
+        """
+        CREATE TABLE component_actions (
+            component_set_id TEXT NOT NULL,
+            actor_id TEXT NOT NULL CHECK (length(actor_id) > 0),
+            action TEXT NOT NULL CHECK (length(action) > 0),
+            claimed_at TEXT NOT NULL,
+            PRIMARY KEY (component_set_id, actor_id, action),
+            FOREIGN KEY (component_set_id)
+                REFERENCES component_sets(component_set_id) ON DELETE RESTRICT
+        )
+        """,
+    ),
+)
+
+_MIGRATION_3 = Migration(
+    version=3,
+    statements=(
+        "ALTER TABLE component_actions ADD COLUMN confirmed_state TEXT",
+        "ALTER TABLE component_actions ADD COLUMN confirmed_state_version INTEGER",
+        """
+        CREATE TRIGGER component_actions_confirmation_shape_insert
+        BEFORE INSERT ON component_actions
+        WHEN (NEW.confirmed_state IS NULL) != (NEW.confirmed_state_version IS NULL)
+          OR (NEW.confirmed_state_version IS NOT NULL AND NEW.confirmed_state_version < 0)
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid component action confirmation');
+        END
+        """,
+        """
+        CREATE TRIGGER component_actions_confirmation_shape_update
+        BEFORE UPDATE OF confirmed_state, confirmed_state_version ON component_actions
+        WHEN (NEW.confirmed_state IS NULL) != (NEW.confirmed_state_version IS NULL)
+          OR (NEW.confirmed_state_version IS NOT NULL AND NEW.confirmed_state_version < 0)
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid component action confirmation');
+        END
+        """,
+    ),
+)
+
+_MIGRATIONS = (_MIGRATION_1, _MIGRATION_2, _MIGRATION_3)
 
 
 def _utc_text(value: datetime) -> str:

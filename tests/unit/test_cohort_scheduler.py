@@ -528,6 +528,8 @@ def test_discovery_facade_exports_exact_public_api() -> None:
         "GooglePlacesDiscoverySource",
         "JsonDiscoverySource",
         "ManualUrlDiscoverySource",
+        "OverpassDiscoveryProvider",
+        "OverpassDiscoverySource",
         "SchedulerCursor",
         "SchedulerResult",
         "SerperDiscoveryProvider",

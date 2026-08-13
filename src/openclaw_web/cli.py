@@ -1,9 +1,10 @@
 """Command-line contract for the website discovery and audit workflow."""
 
 import json
+import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Protocol
+from typing import Annotated, Protocol
 
 import typer
 
@@ -70,7 +71,7 @@ def health(json_output: bool = typer.Option(False, "--json", help="Xuat JSON red
     if json_output:
         from openclaw_web.health import HealthService, HealthSettings
 
-        report = HealthService(HealthSettings(Path(".openclaw-web-artifacts"))).check()
+        report = HealthService(HealthSettings.from_environment()).check()
         _emit({
             "manual_audit_ready": report.manual_audit_ready,
             "discovery_ready": report.discovery_ready,
@@ -123,7 +124,17 @@ def calibration() -> None:
 
 
 @app.command(help="Gui artifact da duyet qua delivery outbox.")
-def delivery() -> None:
+def delivery(
+    json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
+) -> None:
+    if json_output:
+        from openclaw_web.runtime import drain_delivery_outbox
+
+        result = drain_delivery_outbox()
+        _emit(result, json_output=True)
+        if result["status"] == "failed":
+            raise typer.Exit(code=1)
+        return
     _run_service("delivery")
 
 
@@ -135,6 +146,22 @@ def cron_run(
     if dry_run:
         _emit({"command": "cron-run", "status": "dry-run", "market": "hanoi-80km", "external_io": False}, json_output=json_output)
         return
+    if json_output:
+        from openclaw_web.runtime import run_daily_discovery
+
+        result = run_daily_discovery()
+        _emit(
+            {
+                "command": "cron-run",
+                "exit_code": result.exit_code,
+                "market": "hanoi-80km",
+                "status": result.status,
+            },
+            json_output=True,
+        )
+        if result.exit_code:
+            raise typer.Exit(code=result.exit_code)
+        return
     _run_service("cron-run")
 
 
@@ -142,5 +169,78 @@ def cron_run(
     "component-action",
     help="Xu ly mot action tu Discord Components v2.",
 )
-def component_action() -> None:
+def component_action(
+    input_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--input",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Doc mot JSON envelope tu file; mac dinh doc stdin.",
+        ),
+    ] = None,
+    json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
+) -> None:
+    if input_path is not None or json_output:
+        from openclaw_web.runtime import run_component_action
+
+        if input_path is not None and not sys.stdin.isatty():
+            probe = sys.stdin.read(1)
+            if probe:
+                typer.echo("Chi duoc dung mot trong --input hoac stdin.", err=True)
+                raise typer.Exit(code=2)
+        try:
+            payload = (
+                input_path.read_text(encoding="utf-8")
+                if input_path is not None
+                else sys.stdin.read(65_537)
+            )
+        except (OSError, UnicodeError) as exc:
+            typer.echo("Khong doc duoc component envelope UTF-8.", err=True)
+            raise typer.Exit(code=2) from exc
+        if len(payload.encode("utf-8")) > 65_536:
+            typer.echo("Component envelope qua lon.", err=True)
+            raise typer.Exit(code=2)
+        try:
+            result = run_component_action(payload)
+        except (KeyError, RuntimeError, ValueError) as exc:
+            typer.echo(f"Khong the xu ly component action: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        _emit(result, json_output=json_output)
+        return
     _run_service("component-action")
+
+
+@app.command(
+    "component-callback",
+    help="Xu ly callback Discord da xac thuc qua lookup message durable.",
+)
+def component_callback(
+    json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
+) -> None:
+    if not json_output:
+        _run_service("component-callback")
+        return
+    from openclaw_web.runtime import run_component_callback
+
+    try:
+        payload = sys.stdin.buffer.read(65_537)
+    except OSError as exc:
+        typer.echo("Khong doc duoc callback envelope UTF-8.", err=True)
+        raise typer.Exit(code=2) from exc
+    if len(payload) > 65_536:
+        typer.echo("Callback envelope qua lon.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        text = payload.decode("utf-8", errors="strict")
+        result = run_component_callback(text)
+    except UnicodeError as exc:
+        typer.echo("Khong doc duoc callback envelope UTF-8.", err=True)
+        raise typer.Exit(code=2) from exc
+    except (KeyError, RuntimeError, ValueError) as exc:
+        typer.echo("Khong the xu ly component callback.", err=True)
+        raise typer.Exit(code=2) from exc
+    _emit(result, json_output=True)

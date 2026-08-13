@@ -1,14 +1,142 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from openclaw_web.health import HealthService, HealthSettings
+from openclaw_web.db import connect, migrate
+from openclaw_web.health import HealthService, HealthSettings, ProbeResult
 from openclaw_web.observability import apply_retention, redact
 
 
 def test_health_reports_missing_discovery_provider_without_breaking_manual_audit(tmp_path: Path) -> None:
-    report = HealthService(HealthSettings(artifact_root=tmp_path, discovery_providers=())).check()
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    state_db = tmp_path / "state.sqlite"
+    connection = connect(state_db)
+    migrate(connection)
+    connection.close()
+    market = tmp_path / "market.yaml"
+    market.write_text("market_id: hanoi-80km", encoding="utf-8")
+    scoring = tmp_path / "scoring.yaml"
+    scoring.write_text("version: test", encoding="utf-8")
+    schemas = tmp_path / "schemas"
+    schemas.mkdir()
+
+    report = HealthService(
+        HealthSettings(
+            artifact_root=artifact_root,
+            state_db=state_db,
+            market_config=market,
+            scoring_config=scoring,
+            schema_root=schemas,
+            discovery_providers=(),
+        ),
+        executable=lambda name: f"/usr/bin/{name}",
+        browser_ready=lambda: True,
+        probe=lambda command, timeout: ProbeResult(command[0], True),
+    ).check()
+
     assert report.manual_audit_ready
     assert not report.discovery_ready
+
+
+def test_health_rejects_relative_artifact_root_without_creating_it(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    report = HealthService(HealthSettings(artifact_root=Path(".openclaw-web-artifacts"))).check()
+
+    assert not report.checks["artifact_root_absolute"]
+    assert not (tmp_path / ".openclaw-web-artifacts").exists()
+
+
+def test_health_external_probes_are_bounded_and_redacted(tmp_path: Path) -> None:
+    calls: list[tuple[tuple[str, ...], float]] = []
+
+    def probe(command: tuple[str, ...], timeout: float) -> ProbeResult:
+        calls.append((command, timeout))
+        return ProbeResult(command[0], command[-1] != "--probe", detail="must-not-escape")
+
+    report = HealthService(
+        HealthSettings(artifact_root=tmp_path.resolve(), external_probe_timeout_seconds=2.5),
+        executable=lambda _name: "/usr/bin/tool",
+        browser_ready=lambda: False,
+        probe=probe,
+    ).check()
+
+    assert calls
+    assert all(timeout == 2.5 for _, timeout in calls)
+    assert all(isinstance(value, bool) for value in report.checks.values())
+    assert "must-not-escape" not in repr(report)
+
+
+def test_health_reports_database_migrations_last_run_and_outbox(tmp_path: Path) -> None:
+    state_db = tmp_path / "state.sqlite"
+    connection = connect(state_db)
+    migrate(connection)
+    connection.execute(
+        "INSERT INTO runs (run_id,idempotency_key,config_version,status,started_at,snapshot_json) "
+        "VALUES ('r1','k1','v1','completed','2026-08-13T00:00:00Z','{}')"
+    )
+    connection.commit()
+    connection.close()
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+
+    report = HealthService(
+        HealthSettings(artifact_root=artifact_root, state_db=state_db),
+        executable=lambda _name: None,
+        browser_ready=lambda: False,
+    ).check()
+
+    assert report.checks["database"]
+    assert report.checks["migrations"]
+    assert report.checks["last_run"]
+    assert report.checks["outbox"]
+
+
+def test_health_settings_from_environment_uses_only_absolute_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENCLAW_WEB_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("OPENCLAW_WEB_STATE_DB", str(tmp_path / "state.sqlite"))
+    monkeypatch.setenv("OPENCLAW_WEB_MARKET_CONFIG", str(tmp_path / "market.yaml"))
+    monkeypatch.setenv("OPENCLAW_WEB_SCORING_CONFIG", str(tmp_path / "scoring.yaml"))
+    monkeypatch.setenv("OPENCLAW_WEB_SCHEMA_ROOT", str(tmp_path / "schemas"))
+    monkeypatch.setenv("SERPER_API_KEY", "never-return-this-value")
+
+    settings = HealthSettings.from_environment()
+
+    assert settings.artifact_root.is_absolute()
+    assert settings.state_db is not None and settings.state_db.is_absolute()
+    assert settings.market_config is not None and settings.market_config.is_absolute()
+    assert settings.scoring_config is not None and settings.scoring_config.is_absolute()
+    assert settings.schema_root is not None and settings.schema_root.is_absolute()
+    assert settings.discovery_providers == ("openstreetmap-overpass", "serper")
+    assert "never-return-this-value" not in repr(settings)
+
+
+def test_health_always_recognizes_overpass_without_optional_credentials(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_PLACES_API_KEY", raising=False)
+    monkeypatch.setenv("OPENCLAW_WEB_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+
+    settings = HealthSettings.from_environment()
+
+    assert settings.discovery_providers == ("openstreetmap-overpass",)
+
+
+def test_health_environment_does_not_normalize_relative_artifact_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENCLAW_WEB_ARTIFACT_ROOT", "relative-artifacts")
+
+    settings = HealthSettings.from_environment()
+    report = HealthService(settings, executable=lambda _name: None).check()
+
+    assert not settings.artifact_root.is_absolute()
+    assert not report.checks["artifact_root_absolute"]
+    assert not (tmp_path / "relative-artifacts").exists()
 
 
 def test_redaction_removes_secrets_from_structured_logs() -> None:

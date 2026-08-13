@@ -511,6 +511,9 @@ class ComponentSet(StrictModel):
     project_state: ProjectState
     page_state: PageState | None = None
     page_id: NonBlankString | None = None
+    page_slug: NonBlankString | None = None
+    assigned_actor_id: NonBlankString | None = None
+    reviewer_id: NonBlankString | None = None
 
 
 class StageRecord(StrictModel):

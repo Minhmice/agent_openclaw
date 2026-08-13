@@ -64,8 +64,11 @@ class _FakeModel:
 
 
 class _FakeTransport:
-    def send(self, _delivery: DeliveryRecord) -> SentMessage:
-        return SentMessage("message-e2e", "https://discord.com/channels/g/c/message-e2e")
+    def send(self, delivery: DeliveryRecord) -> SentMessage:
+        return SentMessage(
+            "message-e2e",
+            f"https://discord.com/channels/g/{delivery.channel_id}/message-e2e",
+        )
 
 
 @pytest.mark.asyncio
@@ -148,9 +151,30 @@ async def test_fixture_candidate_reaches_discord_action_after_gates(tmp_path: Pa
         assert not homepage.unresolved_p0_p1
 
         db.execute("INSERT OR IGNORE INTO projects (project_id, candidate_id, state, state_version, snapshot_json) VALUES ('project-e2e', ?, 'review', 0, '{}')", (candidate_id,))
+        review_card_path = brief_root / "project-e2e" / "review-card.json"
+        review_card_path.write_text(
+            json.dumps(
+                {
+                    "component_set": {
+                        "component_set_id": "set-e2e",
+                        "project_id": "project-e2e",
+                        "card_type": "review",
+                        "allowed_actions": ["approve"],
+                        "expires_at": (
+                            datetime.now(UTC) + timedelta(hours=24)
+                        ).isoformat(),
+                        "state_version": 0,
+                        "project_state": "review",
+                    },
+                    "components": {"reusable": True, "blocks": []},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         repository.enqueue_delivery(DeliveryRecord(
             delivery_id="delivery-e2e", event_type="review-card", project_id="project-e2e", channel_id="channel-e2e",
-            payload_path=str(homepage.html_path), idempotency_key="review:project-e2e", status=DeliveryState.PENDING,
+            payload_path=str(review_card_path), idempotency_key="review:project-e2e", status=DeliveryState.PENDING,
         ))
         sent = OutboxWorker(repository, _FakeTransport()).dispatch_once()
         assert sent is not None and sent.status is DeliveryState.SENT

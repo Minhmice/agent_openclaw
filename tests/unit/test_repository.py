@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, get_ident
+from types import SimpleNamespace
 from typing import cast
 from urllib.parse import quote
 
@@ -30,6 +31,7 @@ from openclaw_web.models import (
     Candidate,
     CandidateSeed,
     ClaimStatus,
+    ComponentSet,
     Confidence,
     DeliveryRecord,
     DeliveryState,
@@ -56,6 +58,7 @@ EXPECTED_TABLES = {
     "feedback",
     "deliveries",
     "component_sets",
+    "component_actions",
     "worklog_events",
 }
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -361,16 +364,122 @@ def test_connect_configures_sqlite_and_migrate_is_idempotent(tmp_path: Path) -> 
         for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     assert EXPECTED_TABLES == tables
-    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
-    migration_row = db.execute(
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+    migration_rows = db.execute(
         "SELECT version, checksum, applied_at FROM schema_migrations"
-    ).fetchone()
-    assert migration_row["version"] == 1
-    assert migration_row["checksum"] == migration_module._MIGRATIONS[0].checksum
-    assert len(migration_row["checksum"]) == 64
-    datetime.fromisoformat(migration_row["applied_at"])
+    ).fetchall()
+    assert [row["version"] for row in migration_rows] == [1, 2, 3]
+    for row, migration in zip(migration_rows, migration_module._MIGRATIONS, strict=True):
+        assert row["checksum"] == migration.checksum
+        assert len(row["checksum"]) == 64
+        datetime.fromisoformat(row["applied_at"])
     assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_component_set_and_action_claim_are_durable(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repository = Repository(db)
+    db.execute(
+        "INSERT INTO projects (project_id, candidate_id, state, state_version, snapshot_json) "
+        "VALUES ('project-components', NULL, 'review', 4, '{}')"
+    )
+    record = ComponentSet(
+        component_set_id="set-components",
+        message_id="message-components",
+        channel_id="channel-components",
+        project_id="project-components",
+        card_type="review",
+        allowed_actions=["approve"],
+        expires_at=datetime(2026, 8, 14, tzinfo=UTC),
+        state_version=4,
+        project_state=ProjectState.REVIEW,
+    )
+
+    repository.insert_component_set(record)
+
+    loaded = repository.get_component_set("channel-components", "message-components")
+    assert loaded == record
+    assert repository.get_component_set_by_message_id("message-components") == record
+    assert repository.get_component_set_by_message_id("missing-message") is None
+    assert repository.get_project_state_version("project-components") == 4
+    assert repository.claim_component_action("set-components", "actor", "approve")
+    assert not repository.claim_component_action("set-components", "actor", "approve")
+
+
+def test_component_set_message_lookup_fails_closed_when_identity_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repository = Repository(db)
+    db.execute("DROP INDEX ux_component_sets_bot_message")
+    db.execute(
+        "INSERT INTO projects (project_id, candidate_id, state, state_version, snapshot_json) "
+        "VALUES ('project-ambiguous', NULL, 'review', 0, '{}')"
+    )
+    first = ComponentSet(
+        component_set_id="set-ambiguous-a",
+        message_id="message-ambiguous",
+        channel_id="channel-a",
+        project_id="project-ambiguous",
+        card_type="review",
+        allowed_actions=["approve"],
+        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        state_version=0,
+        project_state=ProjectState.REVIEW,
+    )
+    second = first.validated_replace(
+        component_set_id="set-ambiguous-b", channel_id="channel-b"
+    )
+    repository.insert_component_set(first)
+    repository.insert_component_set(second)
+
+    with pytest.raises(RepositoryConflict, match="ambiguous"):
+        repository.get_component_set_by_message_id("message-ambiguous")
+
+
+def test_confirmed_component_action_survives_release_and_reconciles_project(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repository = Repository(db)
+    db.execute(
+        "INSERT INTO projects (project_id, candidate_id, state, state_version, snapshot_json) "
+        "VALUES ('project-reconcile', NULL, 'review', 0, '{}')"
+    )
+    repository.insert_component_set(
+        ComponentSet(
+            component_set_id="set-reconcile",
+            message_id="message-reconcile",
+            channel_id="channel-reconcile",
+            project_id="project-reconcile",
+            card_type="review",
+            allowed_actions=["approve"],
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            state_version=0,
+            project_state=ProjectState.REVIEW,
+        )
+    )
+    assert repository.claim_component_action("set-reconcile", "actor", "approve")
+
+    repository.confirm_component_action(
+        "set-reconcile",
+        "actor",
+        "approve",
+        state=ProjectState.APPROVED,
+        state_version=1,
+    )
+    repository.release_component_action("set-reconcile", "actor", "approve")
+
+    assert not repository.claim_component_action("set-reconcile", "actor", "approve")
+    assert repository.reconcile_component_action("set-reconcile", "actor", "approve")
+    row = db.execute(
+        "SELECT state, state_version FROM projects WHERE project_id = 'project-reconcile'"
+    ).fetchone()
+    assert (row["state"], row["state_version"]) == ("approved", 1)
 
 
 def test_connect_expands_tilde_once_for_sqlite_and_parent_creation(
@@ -600,7 +709,11 @@ def test_migrate_rejects_historical_sql_drift_before_mutation(
     before = db.total_changes
     historical = migration_module._MIGRATIONS[0]
     altered = Migration(historical.version, historical.statements + ("SELECT 1",))
-    monkeypatch.setattr(migration_module, "_MIGRATIONS", (altered,))
+    monkeypatch.setattr(
+        migration_module,
+        "_MIGRATIONS",
+        (altered, *migration_module._MIGRATIONS[1:]),
+    )
 
     with pytest.raises(MigrationError, match="checksum"):
         migrate(db)
@@ -680,7 +793,7 @@ def test_migration_failure_rolls_back_every_statement(
     ).fetchone()[0] == 0
     monkeypatch.setattr(migration_module, "_MIGRATIONS", original)
     migrate(db)
-    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
 
 
 def test_migration_commit_failure_rolls_back_schema_and_connection_is_reusable(
@@ -696,7 +809,7 @@ def test_migration_commit_failure_rolls_back_schema_and_connection_is_reusable(
     assert db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] == 0
 
     migrate(db)
-    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
 
 
 def test_migrate_rejects_caller_transaction_without_committing_it(tmp_path: Path) -> None:
@@ -714,7 +827,7 @@ def test_migrate_rejects_caller_transaction_without_committing_it(tmp_path: Path
     ).fetchone()[0] == 0
 
     migrate(db)
-    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
 
 
 def test_deferred_foreign_key_commit_failure_rolls_back_repository_transaction(
@@ -1359,6 +1472,283 @@ def test_delivery_enqueue_is_idempotent_by_unique_key_and_returns_persisted_reco
     with pytest.raises(RepositoryConflict):
         repo.enqueue_delivery(_delivery(delivery_id="delivery-2", project_id="project-2"))
     assert db.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] == 1
+
+
+def test_enqueue_delivery_once_reports_single_winner_across_connections(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite"
+    db = connect(path)
+    migrate(db)
+    _insert_project_parent(db)
+    db.close()
+    barrier = Barrier(2)
+
+    def enqueue() -> bool:
+        connection = open_connection(path)
+        try:
+            barrier.wait()
+            return Repository(connection).enqueue_delivery_once(_delivery())
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: enqueue(), range(2)))
+
+    assert sorted(results) == [False, True]
+
+
+def test_ensure_review_project_is_atomic_across_connections(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite"
+    db = connect(path)
+    migrate(db)
+    _insert_candidate_parent(db)
+    db.close()
+    project = SimpleNamespace(
+        project_id="project-production",
+        candidate_id="candidate-1",
+        market_id="hanoi-80km",
+        artifact_dir=str((tmp_path / "artifacts" / "project-production").resolve()),
+        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+    )
+    barrier = Barrier(2)
+
+    def ensure() -> bool:
+        connection = open_connection(path)
+        try:
+            barrier.wait()
+            return Repository(connection).ensure_review_project(project)
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: ensure(), range(2)))
+
+    assert sorted(results) == [False, True]
+
+
+def test_delivery_enqueue_tolerates_mutable_state_for_same_immutable_identity(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    _insert_project_parent(db)
+    original = repo.enqueue_delivery(_delivery())
+    sending = repo.transition_delivery(
+        original.delivery_id,
+        original,
+        original.validated_replace(status=DeliveryState.SENDING),
+    )
+
+    replay = repo.enqueue_delivery(_delivery())
+
+    assert replay == sending
+    assert replay.status is DeliveryState.SENDING
+    assert db.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] == 1
+
+
+def test_delivery_enqueue_rejects_changed_immutable_content_after_state_mutates(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    _insert_project_parent(db)
+    original = repo.enqueue_delivery(_delivery())
+    repo.transition_delivery(
+        original.delivery_id,
+        original,
+        original.validated_replace(status=DeliveryState.SENDING),
+    )
+
+    with pytest.raises(RepositoryConflict, match="immutable content"):
+        repo.enqueue_delivery(_delivery().validated_replace(payload_path="other/review.json"))
+
+
+def test_claim_next_delivery_skips_exhausted_failed_row(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    _insert_project_parent(db)
+    first = repo.enqueue_delivery(_delivery())
+    exhausted = first.validated_replace(
+        status=DeliveryState.FAILED,
+        attempt_count=2,
+        last_error="exhausted",
+    )
+    repo.transition_delivery(first.delivery_id, first, exhausted)
+    second = _delivery(delivery_id="delivery-2").validated_replace(
+        idempotency_key="review-card:project-1:v2"
+    )
+    repo.enqueue_delivery(second)
+
+    claimed = repo.claim_next_delivery(max_attempts=2)
+
+    assert claimed is not None
+    assert claimed.delivery_id == second.delivery_id
+    assert claimed.status is DeliveryState.SENDING
+    assert repo.get_delivery(first.delivery_id) == exhausted
+
+
+def test_claim_next_delivery_is_atomic_across_connections(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite"
+    db = connect(path)
+    migrate(db)
+    repo = Repository(db)
+    _insert_project_parent(db)
+    repo.enqueue_delivery(_delivery())
+    db.close()
+    barrier = Barrier(2)
+
+    def claim() -> DeliveryRecord | None:
+        connection = open_connection(path)
+        try:
+            barrier.wait()
+            return Repository(connection).claim_next_delivery(max_attempts=2)
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: claim(), range(2)))
+
+    assert sum(result is not None for result in results) == 1
+    claimed = next(result for result in results if result is not None)
+    assert claimed.status is DeliveryState.SENDING
+
+
+def test_delivery_transition_uses_expected_state_compare_and_swap(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    _insert_project_parent(db)
+    pending = repo.enqueue_delivery(_delivery())
+    sending = pending.validated_replace(status=DeliveryState.SENDING)
+
+    assert repo.transition_delivery(pending.delivery_id, pending, sending) == sending
+    with pytest.raises(RepositoryConflict, match="state changed"):
+        repo.transition_delivery(
+            pending.delivery_id,
+            pending,
+            pending.validated_replace(
+                status=DeliveryState.FAILED,
+                attempt_count=1,
+                last_error="late worker",
+            ),
+        )
+    assert repo.get_delivery(pending.delivery_id) == sending
+
+
+def test_delivery_transition_requires_expected_snapshot_not_only_state(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    _insert_project_parent(db)
+    pending = repo.enqueue_delivery(_delivery())
+    claimed = repo.claim_next_delivery(max_attempts=2)
+    assert claimed is not None
+    first_failure = repo.transition_delivery(
+        claimed.delivery_id,
+        claimed,
+        claimed.validated_replace(
+            status=DeliveryState.FAILED,
+            attempt_count=1,
+            last_error="first failure",
+        ),
+    )
+    retry = repo.claim_next_delivery(max_attempts=2)
+    assert retry is not None and retry.status is DeliveryState.SENDING
+
+    with pytest.raises(RepositoryConflict, match="snapshot changed"):
+        repo.transition_delivery(
+            retry.delivery_id,
+            claimed,
+            claimed.validated_replace(
+                status=DeliveryState.FAILED,
+                attempt_count=1,
+                last_error="late first worker",
+            ),
+        )
+    assert repo.get_delivery(pending.delivery_id) == retry
+    assert first_failure.attempt_count == 1
+
+
+def test_production_project_and_delivery_are_durable_and_idempotent(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    _insert_candidate_parent(db)
+    project = SimpleNamespace(
+        project_id="project-production",
+        candidate_id="candidate-1",
+        market_id="hanoi-80km",
+        artifact_dir=str((tmp_path / "artifacts" / "project-production").resolve()),
+        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+    )
+
+    assert repo.ensure_review_project(project)
+    assert not repo.ensure_review_project(project)
+    delivery = _delivery(project_id=project.project_id).validated_replace(
+        delivery_id="delivery-production",
+        idempotency_key="review-card:project-production:v1",
+    )
+    assert repo.enqueue_delivery_once(delivery)
+    assert not repo.enqueue_delivery_once(delivery)
+    assert repo.get_delivery_status(delivery.idempotency_key) is DeliveryState.PENDING
+
+    project_row = db.execute(
+        "SELECT state, state_version, snapshot_json FROM projects WHERE project_id = ?",
+        (project.project_id,),
+    ).fetchone()
+    assert project_row["state"] == ProjectState.REVIEW.value
+    assert project_row["state_version"] == 0
+    assert json.loads(project_row["snapshot_json"])["artifact_dir"] == project.artifact_dir
+
+
+def test_project_state_sync_uses_version_compare_and_swap(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    _insert_project_parent(db)
+
+    assert repo.synchronize_project_state(
+        "project-1",
+        expected_version=0,
+        state=ProjectState.APPROVED,
+        state_version=1,
+    )
+    assert not repo.synchronize_project_state(
+        "project-1",
+        expected_version=0,
+        state=ProjectState.REJECTED,
+        state_version=1,
+    )
+    row = db.execute(
+        "SELECT state, state_version, snapshot_json FROM projects WHERE project_id = 'project-1'"
+    ).fetchone()
+    assert (row["state"], row["state_version"]) == (ProjectState.APPROVED.value, 1)
+    assert json.loads(row["snapshot_json"])["state"] == ProjectState.APPROVED.value
+
+
+def test_review_project_replay_tolerates_coordinator_owned_state_changes(tmp_path: Path) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    _insert_candidate_parent(db)
+    project = SimpleNamespace(
+        project_id="project-production",
+        candidate_id="candidate-1",
+        market_id="hanoi-80km",
+        artifact_dir=str((tmp_path / "artifacts" / "project-production").resolve()),
+        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+    )
+    assert repo.ensure_review_project(project)
+    assert repo.synchronize_project_state(
+        project.project_id,
+        expected_version=0,
+        state=ProjectState.APPROVED,
+        state_version=1,
+    )
+
+    assert not repo.ensure_review_project(project)
 
 
 def _foreign_key_shapes(

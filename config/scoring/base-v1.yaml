@@ -14,27 +14,32 @@ base_rules:
     input: lighthouse.lcp_ms
     operator: gt
     threshold: 4000.0
-    points: 12.0
+    points: 20.0
+    evidence_ids: [LIGHTHOUSE-LCP-SLOW]
   - rule_id: poor-performance
     input: lighthouse.performance_score
     operator: lt
     threshold: 50.0
-    points: 15.0
+    points: 20.0
+    evidence_ids: [LIGHTHOUSE-PERFORMANCE-POOR]
   - rule_id: broken-links
     input: audit.broken_links
     operator: gt
     threshold: 0
-    points: 8.0
+    points: 15.0
+    evidence_ids: [LINK-BROKEN]
   - rule_id: missing-conversion-cta
     input: audit.has_conversion_cta
     operator: eq
     threshold: false
-    points: 15.0
+    points: 25.0
+    evidence_ids: [CTA-MISSING]
   - rule_id: missing-contact-page
     input: crawl.has_contact_page
     operator: eq
     threshold: false
-    points: 10.0
+    points: 20.0
+    evidence_ids: [CRAWL-CONTACT-MISSING]
 cohort_overrides:
   manufacturer:
     rules: []

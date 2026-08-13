@@ -69,6 +69,18 @@ class WorkflowCoordinatorTests(unittest.TestCase):
         self.assertEqual(project["status"], "offer-ready")
         self.assertEqual(project["offer_channel"], "1536659097649422356")
 
+    def test_namespaced_lead_approve_alias_avoids_openclaw_core_collision(self):
+        self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)
+        before = self.load_project()["state_version"]
+
+        result = self.run_cmd("lead-approve", "acme-demo", "--actor", WIEN)
+
+        self.assertEqual(result.returncode, 0)
+        project = self.load_project()
+        self.assertEqual(project["status"], "approved")
+        self.assertEqual(project["approved_by"], WIEN)
+        self.assertEqual(project["state_version"], before + 1)
+
     def test_page_approval_rejects_incomplete_checklist(self):
         self.project["pages"][0]["checklist"][0]["status"] = "pending"
         self.input_path.write_text(json.dumps(self.project), encoding="utf-8")
@@ -101,7 +113,7 @@ class WorkflowCoordinatorTests(unittest.TestCase):
         message = coordinator.format_reminder(project, [])
         self.assertIn("NHẮC VIỆC", message)
         self.assertIn("Acme Demo", message)
-        self.assertIn("/approve acme-demo", message)
+        self.assertIn("/lead-approve acme-demo", message)
         self.assertIn("https://discord.com/channels/1446612692910739637/1536658476288450630/200", message)
         self.assertNotIn("None", message)
 

@@ -97,6 +97,10 @@ def log(event: str, project_id: str = "", detail: str = "") -> None:
 
 
 def save(project: dict[str, Any]) -> None:
+    version = project.get("state_version", 0)
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise ValueError("state_version must be a non-negative integer")
+    project["state_version"] = version + 1
     project["last_update"] = now()
     atomic_write(project_path(project["project_id"]), project)
 
@@ -176,6 +180,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     project.setdefault("status", "review")
     project.setdefault("pages", [])
     project.setdefault("final_confirmations", {})
+    project.setdefault("state_version", 0)
     project.setdefault("created_at", now())
     project.setdefault("last_update", now())
     if project["status"] not in PROJECT_STATES:
@@ -428,8 +433,8 @@ def format_reminder(project: dict[str, Any], pending_pages: list[dict[str, Any]]
             f"🔗 Bài review: <{review_url}>" if review_url else "🔗 Bài review: chưa có link message được track.",
             "",
             "**Bước tiếp theo**",
-            f"1. Duyệt lead: `/approve {project_id}`",
-            f"2. Yêu cầu chỉnh: `/request-change {project_id} <note>`",
+            f"1. Duyệt lead: `/lead-approve {project_id}`",
+            f"2. Yêu cầu chỉnh: `/lead-request-change {project_id} <note>`",
         ])
     else:
         if review_url:
@@ -552,16 +557,30 @@ def parser() -> argparse.ArgumentParser:
     approve.add_argument("project_id")
     approve.add_argument("--actor", required=True)
     approve.set_defaults(func=cmd_approve)
+    lead_approve = sub.add_parser("lead-approve")
+    lead_approve.add_argument("project_id")
+    lead_approve.add_argument("--actor", required=True)
+    lead_approve.set_defaults(func=cmd_approve)
     reject = sub.add_parser("reject")
     reject.add_argument("project_id")
     reject.add_argument("reason")
     reject.add_argument("--actor", required=True)
     reject.set_defaults(func=cmd_reject)
+    lead_reject = sub.add_parser("lead-reject")
+    lead_reject.add_argument("project_id")
+    lead_reject.add_argument("reason")
+    lead_reject.add_argument("--actor", required=True)
+    lead_reject.set_defaults(func=cmd_reject)
     request_change = sub.add_parser("request-change")
     request_change.add_argument("project_id")
     request_change.add_argument("note")
     request_change.add_argument("--actor", required=True)
     request_change.set_defaults(func=cmd_request_change)
+    lead_request_change = sub.add_parser("lead-request-change")
+    lead_request_change.add_argument("project_id")
+    lead_request_change.add_argument("note")
+    lead_request_change.add_argument("--actor", required=True)
+    lead_request_change.set_defaults(func=cmd_request_change)
     page_status = sub.add_parser("page-status")
     page_status.add_argument("project_id")
     page_status.add_argument("page_slug")

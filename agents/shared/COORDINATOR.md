@@ -64,9 +64,9 @@ Follow [curie-handoff.md](contracts/curie-handoff.md) and [curie-report.md](cont
 Use the coordinator script at `/home/minhmice/.openclaw/workflow/workflow-coordinator.py` and the command contract in `/home/minhmice/.openclaw/workflow/contracts/workflow-commands.md`.
 
 ```text
-/approve <project_id>
-/reject <project_id> <reason>
-/request-change <project_id> <note>
+/lead-approve <project_id>
+/lead-reject <project_id> <reason>
+/lead-request-change <project_id> <note>
 /status <project_id>
 /page-status <project_id> <page_slug>
 /page-done <project_id> <page_slug>
@@ -75,6 +75,11 @@ Use the coordinator script at `/home/minhmice/.openclaw/workflow/workflow-coordi
 ```
 
 Discord Components v2 are preferred when `agentComponents.enabled` is supported. Treat the component callback and typed command as two input encodings for the same coordinator transition: both must validate actor, channel, bot-owned message, project, state version, expiry, checklist, and P0/P1 gates. If feature detection fails or a callback is stale, return the exact typed fallback command. Never accept an unverified reaction as approval.
+
+`/approve` is reserved by OpenClaw for exec approvals. Workflow lead review must use
+`/lead-approve`; buttons call the deterministic plugin callback directly and never emit
+`/approve` into the core command parser. Actions that require a reason remain typed fallbacks
+until a verified modal-input path is available.
 
 ## Handoff messages
 
@@ -102,7 +107,7 @@ The 30-minute cron uses the deterministic command below; it does not ask a model
 
 ```bash
 OPENCLAW_WORKFLOW_ROOT=/home/minhmice/.openclaw/workflow \
-python3 /home/minhmice/.openclaw/workspace/workflow/workflow-coordinator.py \
+python3 /home/minhmice/.openclaw/workflow/workflow-coordinator.py \
   reminder-dispatch --stale-minutes 30
 ```
 
