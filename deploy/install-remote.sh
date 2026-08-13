@@ -184,6 +184,20 @@ PY
 }
 
 mkdir -p "$releases"
+release_is_usable() {
+  local candidate=$1
+  [[ -x "$candidate/venv/bin/openclaw-web" &&
+     -s "$candidate/release-manifest" &&
+     -d "$candidate/openclaw-web-plugin" ]] || return 1
+  "$candidate/venv/bin/openclaw-web" --help >/dev/null 2>&1
+}
+if [[ -e "$release" ]] && ! release_is_usable "$release"; then
+  if [[ -L "$current" && "$(readlink "$current")" == "$release" ]]; then
+    echo "existing current release is incomplete" >&2
+    exit 2
+  fi
+  rm -rf -- "$release"
+fi
 if [[ ! -e "$release" ]]; then
   release_tmp="$release"
   mkdir -m 0755 "$release_tmp"
@@ -204,8 +218,7 @@ if [[ ! -e "$release" ]]; then
   offline_readiness "$release_tmp/venv/bin/python"
   release_tmp=""
 else
-  [[ -x "$release/venv/bin/openclaw-web" && -s "$release/release-manifest" &&
-      -d "$release/openclaw-web-plugin" ]] || {
+  release_is_usable "$release" || {
     echo "existing immutable release is incomplete" >&2
     exit 2
   }

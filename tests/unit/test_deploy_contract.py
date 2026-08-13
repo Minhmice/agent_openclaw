@@ -43,7 +43,7 @@ def test_installer_uses_hash_named_release_atomic_pointer_and_frozen_timer() -> 
     installer = _read("deploy/install-remote.sh")
 
     assert 'release="$releases/$wheel_sha"' in installer
-    assert '"$release/venv/bin/openclaw-web"' in installer
+    assert '"$candidate/venv/bin/openclaw-web"' in installer
     assert "current.new" in installer
     assert 'mv -Tf "$app_root/current.new" "$current"' in installer
     assert "systemctl --user disable --now openclaw-web-discovery.timer" in installer
