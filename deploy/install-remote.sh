@@ -131,9 +131,7 @@ verify_staged_units() {
   rm -rf -- "$verify_dir"
 }
 verify_staged_units
-openclaw plugins validate \
-  --root "$source_root/deploy/openclaw-web-plugin" \
-  --entry index.js >/dev/null
+node --check "$source_root/deploy/openclaw-web-plugin/index.js"
 openclaw config validate >/dev/null
 
 wheel_sha=$(sha256sum "$wheel" | cut -d' ' -f1)
@@ -238,7 +236,7 @@ else
   offline_readiness "$release/venv/bin/python"
 fi
 release_plugin="$release/openclaw-web-plugin"
-openclaw plugins validate --root "$release_plugin" --entry index.js >/dev/null
+node --check "$release_plugin/index.js"
 
 mkdir -m 0700 -p "$backup_root"
 chmod 0700 "$backup_root"

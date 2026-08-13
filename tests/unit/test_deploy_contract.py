@@ -76,9 +76,8 @@ def test_installer_hashes_and_installs_the_native_components_plugin() -> None:
     assert 'plugin_root="$HOME/.openclaw/extensions/openclaw-web-components"' in installer
     assert 'release_plugin="$release/openclaw-web-plugin"' in installer
     assert 'ln -s "$release_plugin" "$plugin_link_tmp"' in installer
-    assert "openclaw plugins validate" in installer
-    assert '--root "$source_root/deploy/openclaw-web-plugin"' in installer
-    assert '--entry index.js' in installer
+    assert 'node --check "$source_root/deploy/openclaw-web-plugin/index.js"' in installer
+    assert 'node --check "$release_plugin/index.js"' in installer
     assert "openclaw plugins inspect openclaw-web-components --runtime --json" in installer
     assert "openclaw plugins install" not in installer
     assert "openclaw plugins enable" not in installer
