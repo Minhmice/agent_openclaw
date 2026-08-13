@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from typing import Protocol
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
