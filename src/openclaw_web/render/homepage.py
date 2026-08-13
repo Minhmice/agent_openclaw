@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,9 +61,16 @@ class HomepageRenderer:
 
     def _render_html(self, package: BriefPackage, page: dict[str, object], content: dict[str, dict[str, object]]) -> str:
         sections: list[str] = []
-        for section in page["sections"]:
-            assert isinstance(section, dict)
-            values = [content[content_id] for content_id in section["content_ids"]]
+        sections_value = page.get("sections", [])
+        if not isinstance(sections_value, list):
+            raise TypeError("page sections must be a list")
+        for section in sections_value:
+            if not isinstance(section, dict):
+                raise TypeError("page section must be a mapping")
+            content_ids = section.get("content_ids", [])
+            if not isinstance(content_ids, list) or not all(isinstance(item, str) for item in content_ids):
+                raise TypeError("page section content_ids must be a list of strings")
+            values = [content[content_id] for content_id in content_ids]
             tag = "section"
             body: list[str] = []
             for item in values:
@@ -76,7 +84,13 @@ class HomepageRenderer:
                 else:
                     body.append(f"<p>{raw}</p>")
             sections.append(f'<{tag} data-section="{html.escape(str(section["type"]))}">' + "".join(body) + f"</{tag}>")
-        colors = package.design_tokens["tokens"]["color"]
+        tokens_value = package.design_tokens.get("tokens", {})
+        if not isinstance(tokens_value, Mapping):
+            raise TypeError("design tokens must be a mapping")
+        colors_value = tokens_value.get("color", {})
+        if not isinstance(colors_value, Mapping):
+            raise TypeError("design token colors must be a mapping")
+        colors = {str(key): str(value) for key, value in colors_value.items()}
         return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(str(package.project['business_name']))}</title>
 <style>:root{{--text:{colors['text']};--surface:{colors['surface']};--action:{colors['action']}}}*{{box-sizing:border-box}}body{{margin:0;color:var(--text);background:var(--surface);font:18px/1.5 system-ui,sans-serif}}main{{max-width:72rem;margin:auto;padding:2rem}}section{{padding:2rem 0}}h1{{font-size:clamp(2.5rem,7vw,5rem);line-height:1.05}}.primary-cta{{display:inline-flex;min-height:44px;align-items:center;padding:.75rem 1rem;background:var(--action);color:white;border-radius:.25rem;text-decoration:none}}.primary-cta:focus-visible{{outline:3px solid var(--text);outline-offset:3px}}@media (max-width:768px){{main{{padding:1rem}}section{{padding:1.25rem 0}}.primary-cta{{width:100%;justify-content:center}}}}@media (prefers-reduced-motion:reduce){{*{{scroll-behavior:auto;transition:none!important;animation:none!important}}}}</style></head>
