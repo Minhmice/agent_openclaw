@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from typing import Protocol
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -12,9 +13,14 @@ class CronResult:
     status: str
     exit_code: int
 
+
+class RunLockRepository(Protocol):
+    def acquire_run_lock(self, key: str, owner: str, now: datetime, lease_seconds: int) -> bool: ...
+    def release_run_lock(self, key: str, owner: str) -> None: ...
+
 class CronRunner:
     LEASE_SECONDS = 180 * 60
-    def __init__(self, repository: object, discover: Callable[[], str], *, market_id: str = "hanoi-80km", now: Callable[[], datetime] | None = None) -> None:
+    def __init__(self, repository: RunLockRepository, discover: Callable[[], str], *, market_id: str = "hanoi-80km", now: Callable[[], datetime] | None = None) -> None:
         self.repository, self.discover, self.market_id, self.now = repository, discover, market_id, now or (lambda: datetime.now(UTC))
     def run(self, schedule_date: date) -> CronResult:
         key, owner, now = f"{self.market_id}:{schedule_date.isoformat()}", str(uuid.uuid4()), self.now()
