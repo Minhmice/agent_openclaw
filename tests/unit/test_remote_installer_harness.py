@@ -208,6 +208,7 @@ exec "{_bash_path(Path(sys.executable))}" "$@"
 """,
     )
     _write_executable(fake_bin / "lighthouse", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(fake_bin / "node", "#!/usr/bin/env bash\n[[ \"$1\" == \"--check\" ]]\n")
     _write_executable(
         fake_bin / "stat",
         """#!/usr/bin/env bash

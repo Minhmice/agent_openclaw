@@ -185,8 +185,7 @@ PY
 
 mkdir -p "$releases"
 if [[ ! -e "$release" ]]; then
-  release_tmp="$releases/.$wheel_sha.new"
-  [[ ! -e "$release_tmp" ]] || { echo "incomplete release staging path exists" >&2; exit 2; }
+  release_tmp="$release"
   mkdir -m 0755 "$release_tmp"
   python3 -m venv "$release_tmp/venv"
   "$release_tmp/venv/bin/python" -m pip install --disable-pip-version-check "$wheel" >/dev/null
@@ -203,7 +202,6 @@ if [[ ! -e "$release" ]]; then
   # Offline readiness: imports, non-empty YAML mappings, parseable schemas, and
   # local executables. No discovery, crawl, gateway call, or send.
   offline_readiness "$release_tmp/venv/bin/python"
-  mv -T "$release_tmp" "$release"
   release_tmp=""
 else
   [[ -x "$release/venv/bin/openclaw-web" && -s "$release/release-manifest" &&
