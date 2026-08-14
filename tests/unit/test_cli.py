@@ -3,6 +3,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from pydantic import AnyHttpUrl
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -119,6 +120,27 @@ def test_legacy_review_json_calls_the_durable_bridge(monkeypatch: pytest.MonkeyP
     assert result.exit_code == 0
     assert calls == ["vn-ntq-test"]
     assert json.loads(result.output)["status"] == "sent"
+
+
+def test_legacy_review_json_serializes_pydantic_message_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "openclaw_web.runtime.run_legacy_review",
+        lambda _project_id: {
+            "project_id": "vn-ntq-test",
+            "status": "sent",
+            "message_id": "1537000000000000000",
+            "message_url": AnyHttpUrl("https://discord.com/channels/1/2/3"),
+        },
+    )
+
+    result = CliRunner().invoke(
+        cli.app, ["legacy-review", "--project-id", "vn-ntq-test", "--json"]
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["message_url"] == "https://discord.com/channels/1/2/3"
 
 
 def test_component_action_reads_strict_envelope_from_stdin(

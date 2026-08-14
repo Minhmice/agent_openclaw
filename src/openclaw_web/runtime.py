@@ -183,7 +183,7 @@ def run_legacy_review(
                 "component_set_id": component_set_id,
                 "status": existing.status.value,
                 "message_id": existing.message_id,
-                "message_url": existing.message_url,
+                "message_url": str(existing.message_url) if existing.message_url is not None else None,
             }
         repository.enqueue_delivery_once(delivery)
         sent = OutboxWorker(
@@ -201,7 +201,7 @@ def run_legacy_review(
             "component_set_id": component_set_id,
             "status": persisted.status.value,
             "message_id": persisted.message_id,
-            "message_url": persisted.message_url,
+            "message_url": str(persisted.message_url) if persisted.message_url is not None else None,
         }
     finally:
         connection.close()

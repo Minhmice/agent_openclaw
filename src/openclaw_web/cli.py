@@ -60,7 +60,15 @@ def _run_service(dependency: str) -> None:
 
 def _emit(payload: Mapping[str, object], *, json_output: bool) -> None:
     if json_output:
-        typer.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        typer.echo(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
     else:
         for key, value in payload.items():
             typer.echo(f"{key}: {value}")
