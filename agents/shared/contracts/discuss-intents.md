@@ -40,7 +40,7 @@ When matched, `main` must:
 6. Send a Vietnamese completion acknowledgment back to `discuss`, for example: `✅ Đã tìm được rồi. Check ở #shit-that-could-cooking: <message_link>`. Record this acknowledgment message ID.
 7. Append concise `curie-discovery-requested` and `curie-discovery-completed` events to the workflow worklog.
 
-The discovery path is bounded and fail-fast. If `sessions_spawn` is forbidden, if `web_search` is unavailable, or if the Curie timeout is reached, do not let `main` run an ad-hoc search loop. Report `no_candidate_defensible` or `partial` with a concise Vietnamese reason and append the error to `/home/minhmice/.openclaw/workflow/WORKLOG.md`.
+The discovery path is bounded and fail-fast. If `sessions_spawn` is forbidden or the Curie timeout is reached, do not let `main` run an ad-hoc search loop. Curie may use only the single bounded public-HTTP fallback in [curie-handoff.md](curie-handoff.md) when `web_search` is unavailable. Report `no_candidate_defensible` or `partial` with a concise Vietnamese reason and append the error to `/home/minhmice/.openclaw/workflow/WORKLOG.md`.
 
 ## Hard stops
 

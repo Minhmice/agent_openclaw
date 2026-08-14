@@ -69,6 +69,6 @@ def test_discuss_discovery_contract_is_bounded_and_uses_canonical_runtime_paths(
     assert "/home/minhmice/.openclaw/workspace/workflow/projects" in docs
     assert "shared instructions" in docs
     assert "sessions_spawn" in docs and "allowAgents" in docs
-    assert "Do not fall back to" in docs and "web_search" in docs
+    assert ("Do not fall back to" in docs or "must never fall back" in docs) and "web_search" in docs
     assert "return `no_candidate_defensible`" in docs
     assert "bounded" in docs.lower()
