@@ -337,13 +337,20 @@ class LighthouseRunner:
 
         work = Path(tempfile.mkdtemp(prefix="lighthouse-", dir=self._output_root))
         report = work / "report.json"
+        chrome_flags = ["--headless", "--disable-gpu"]
+        if os.environ.get("OPENCLAW_WEB_CHROME_NO_SANDBOX", "").casefold() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            chrome_flags.append("--no-sandbox")
         argv = [
             str(executable),
             safe_url,
             "--quiet",
             "--output=json",
             f"--output-path={report}",
-            "--chrome-flags=--headless --disable-gpu",
+            f"--chrome-flags={' '.join(chrome_flags)}",
         ]
         try:
             try:

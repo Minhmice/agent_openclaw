@@ -161,6 +161,33 @@ def test_runner_uses_argv_isolated_file_and_cleans_up(tmp_path: Path) -> None:
     assert "secret" not in (result.reason or "")
 
 
+def test_runner_adds_no_sandbox_only_when_explicitly_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = _executable(tmp_path)
+    root = tmp_path / "reports"
+    observed: dict[str, object] = {}
+
+    def fake_run(
+        argv: list[str], *, timeout: float, cwd: Path
+    ) -> subprocess.CompletedProcess[bytes]:
+        del timeout, cwd
+        observed["argv"] = argv
+        output_arg = next(item for item in argv if item.startswith("--output-path="))
+        Path(output_arg.split("=", 1)[1]).write_text(
+            json.dumps(_document()), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setenv("OPENCLAW_WEB_CHROME_NO_SANDBOX", "1")
+    result = LighthouseRunner(root, executable=executable, subprocess_runner=fake_run).run(
+        "https://example.com/"
+    )
+
+    assert result.status == "complete"
+    assert observed["argv"][-1] == "--chrome-flags=--headless --disable-gpu --no-sandbox"
+
+
 @pytest.mark.parametrize("mode", ["missing", "failure", "timeout", "invalid", "oversized"])
 def test_runner_returns_sanitized_structured_status_and_cleans_up(
     tmp_path: Path, mode: str

@@ -445,6 +445,19 @@ env_file="$config_dir/env"
 record_target "$env_file"
 mkdir -m 0700 -p "$config_dir" "$state_root" "$artifact_root"
 chmod 0700 "$config_dir" "$state_root"
+# Playwright's managed Chrome is not placed on PATH. Lighthouse also needs the
+# browser sandbox flag disabled on this user-level host because the cached
+# browser has no setuid sandbox helper. Keep both values explicit and
+# non-secret so a future immutable release preserves the real Chromium path.
+chrome_path=""
+for candidate in "$HOME"/.cache/ms-playwright/*/chrome-linux64/chrome; do
+  if [[ -f "$candidate" && -x "$candidate" ]]; then
+    chrome_path="$candidate"
+    break
+  fi
+done
+chrome_no_sandbox=0
+[[ -n "$chrome_path" ]] && chrome_no_sandbox=1
 env_tmp=$(mktemp "$config_dir/env.XXXXXX")
 printf '%s\n' \
   "OPENCLAW_WEB_STATE_DB=$state_root/state.sqlite" \
@@ -455,6 +468,8 @@ printf '%s\n' \
   "OPENCLAW_WORKFLOW_ROOT=$workflow" \
   "OPENCLAW_WEB_DISCORD_GUILD_ID=1446612692910739637" \
   "OPENCLAW_WEB_REVIEW_CHANNEL_ID=1536658476288450630" \
+  "CHROME_PATH=$chrome_path" \
+  "OPENCLAW_WEB_CHROME_NO_SANDBOX=$chrome_no_sandbox" \
   "PATH=$HOME/.local/share/openclaw-web/tools/node_modules/.bin:/usr/local/bin:/usr/bin:/bin" > "$env_tmp"
 chmod 0600 "$env_tmp"
 mv -f "$env_tmp" "$env_file"

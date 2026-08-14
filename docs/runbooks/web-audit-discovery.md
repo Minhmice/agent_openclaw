@@ -75,6 +75,8 @@ Không coi reaction hoặc payload thiếu actor/message identity là approval. 
 
 Log là structured JSON đã redaction. Health phải phân biệt manual-audit readiness với discovery/provider readiness và kiểm tra DB/schema, artifact root, browser, Lighthouse, market/rubric, OpenClaw CLI, gateway/Discord, timer, lần chạy gần nhất và outbox.
 
+Trên host dùng Playwright-managed Chrome, installer ghi `CHROME_PATH` vào env của user service. Nếu binary không có setuid sandbox helper, installer ghi thêm `OPENCLAW_WEB_CHROME_NO_SANDBOX=1` để Lighthouse/Chromium smoke chạy được trong user service; đây là lựa chọn riêng của host audit đã được duyệt, không phải cấu hình toàn cục của OpenClaw. Không tự bật flag này cho môi trường có boundary không tin cậy.
+
 Retention chỉ xóa screenshot/run log của candidate bị reject đã hết hạn và temporary delivery thất bại. Không xóa project approved, evidence, backup, session hoặc config snapshot. Backup là artifact nhạy cảm; không in nội dung.
 
 ## Backup, rollback và remote boundary
