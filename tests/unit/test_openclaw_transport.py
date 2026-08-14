@@ -34,6 +34,7 @@ def test_openclaw_transport_sends_presentation_through_stdin_without_model(
         json.dumps(
             {
                 "component_set": {"project_id": "project-1"},
+                "message": "**NTQ Solution · Website review**",
                 "components": {
                     "reusable": True,
                     "blocks": [
@@ -108,7 +109,7 @@ def test_openclaw_transport_sends_presentation_through_stdin_without_model(
         "--target",
     ]
     assert argv[7:9] == [f"channel:{CHANNEL_ID}", "--message"]
-    assert argv[9:11] == ["Duyệt lead project-1", "--presentation"]
+    assert argv[9:11] == ["**NTQ Solution · Website review**", "--presentation"]
     assert json.loads(str(argv[11])) == {
         "blocks": [
             {

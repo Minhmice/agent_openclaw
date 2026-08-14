@@ -119,12 +119,17 @@ class OpenClawAgentTransport:
         )
         if len(presentation.encode("utf-8")) > 65_536:
             raise ValueError("delivery payload is too large for the OpenClaw CLI")
+        message = envelope.get("message")
+        if not isinstance(message, str) or not message.strip():
+            message = f"Duyệt lead {delivery.project_id}"
+        if len(message.encode("utf-8")) > 4_000:
+            raise ValueError("delivery message is too large for the OpenClaw CLI")
         command = [
             *self.build_command(),
             "--target",
             f"channel:{delivery.channel_id}",
             "--message",
-            f"Duyệt lead {delivery.project_id}",
+            message,
             "--presentation",
             presentation,
         ]
