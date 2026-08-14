@@ -322,6 +322,28 @@ class Repository:
             ),
         )
 
+    def _refresh_discovery_source_urls(self, candidate: Candidate) -> Candidate:
+        """Keep the candidate snapshot aligned with intact discovery observations."""
+
+        rows = self.connection.execute(
+            """
+            SELECT DISTINCT source_url
+            FROM candidate_sources
+            WHERE candidate_id = ? AND conflict = 0
+            ORDER BY source_url
+            """,
+            (candidate.candidate_id,),
+        ).fetchall()
+        source_urls = [str(row["source_url"]) for row in rows]
+        if not source_urls:
+            return candidate
+        refreshed = candidate.validated_replace(source_urls=source_urls)
+        self.connection.execute(
+            "UPDATE candidates SET snapshot_json = ? WHERE candidate_id = ?",
+            (_canonical_json(refreshed), candidate.candidate_id),
+        )
+        return refreshed
+
     def upsert_discovery_seed(
         self,
         seed: CandidateSeed | DiscoverySeedBatch,
@@ -441,6 +463,7 @@ class Repository:
                     normalized_cohort,
                     conflict=contradictory,
                 )
+            persisted = self._refresh_discovery_source_urls(persisted)
 
         return DiscoverySeedUpsertResult(disposition, persisted)
 

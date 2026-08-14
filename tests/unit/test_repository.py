@@ -1317,6 +1317,39 @@ def test_discovery_seed_evidence_set_preserves_distinct_sources_but_dedupes_retr
     ]
 
 
+def test_discovery_duplicate_merges_distinct_source_urls_into_candidate_snapshot(
+    tmp_path: Path,
+) -> None:
+    db = connect(tmp_path / "state.sqlite")
+    migrate(db)
+    repo = Repository(db)
+    first = _seed("https://example.com", "Example", "Hà Nội").validated_replace(
+        source_url="https://directory.example/evidence/1", source_type="directory"
+    )
+    second = first.validated_replace(
+        source_url="https://maps.google.com/?cid=place-1", source_type="google-places"
+    )
+
+    assert repo.upsert_discovery_seed(first, "other").disposition is DiscoverySeedDisposition.INSERTED
+    duplicate = repo.upsert_discovery_seed(second, "other")
+
+    assert duplicate.disposition is DiscoverySeedDisposition.DUPLICATE
+    assert {str(url) for url in duplicate.candidate.source_urls} == {
+        "https://directory.example/evidence/1",
+        "https://maps.google.com/?cid=place-1",
+    }
+    snapshot = Candidate.model_validate_json(
+        db.execute(
+            "SELECT snapshot_json FROM candidates WHERE candidate_id = ?",
+            (duplicate.candidate.candidate_id,),
+        ).fetchone()[0]
+    )
+    assert {str(url) for url in snapshot.source_urls} == {
+        "https://directory.example/evidence/1",
+        "https://maps.google.com/?cid=place-1",
+    }
+
+
 def test_concurrent_discovery_seed_upsert_reports_exactly_one_insert(tmp_path: Path) -> None:
     path = tmp_path / "state.sqlite"
     db = connect(path)
