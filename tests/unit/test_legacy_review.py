@@ -11,7 +11,6 @@ from openclaw_web.review.legacy import (
     render_legacy_review_message,
 )
 
-
 PROJECT = {
     "project_id": "vn-ntq-test",
     "business_name": "NTQ Solution",

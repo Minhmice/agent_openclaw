@@ -44,7 +44,7 @@ def _section_lines(dossier: str, marker: str) -> list[str]:
             if result:
                 break
             continue
-        if stripped.startswith("## ") or stripped.startswith("### "):
+        if stripped.startswith(("## ", "### ")):
             break
         result.append(stripped)
     return result
@@ -154,4 +154,3 @@ def render_legacy_review_message(project: Mapping[str, object], dossier: str) ->
     if len(message.encode("utf-8")) > _MAX_MESSAGE_BYTES:
         raise LegacyReviewError("compact review message is too large")
     return message
-

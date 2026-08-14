@@ -76,7 +76,7 @@ def _legacy_created_at(
     raw = project.get("created_at")
     if isinstance(raw, str) and raw.strip():
         try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(raw)
             if parsed.tzinfo is not None and parsed.utcoffset() is not None:
                 return parsed.astimezone(UTC)
         except ValueError:
@@ -89,7 +89,7 @@ def _legacy_created_at(
             persisted = json.loads(str(row["snapshot_json"]))
             persisted_created = persisted.get("created_at") if isinstance(persisted, dict) else None
             if isinstance(persisted_created, str):
-                parsed = datetime.fromisoformat(persisted_created.replace("Z", "+00:00"))
+                parsed = datetime.fromisoformat(persisted_created)
                 if parsed.tzinfo is not None and parsed.utcoffset() is not None:
                     return parsed.astimezone(UTC)
         except (TypeError, ValueError, json.JSONDecodeError):
