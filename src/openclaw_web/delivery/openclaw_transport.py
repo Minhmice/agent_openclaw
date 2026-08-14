@@ -97,6 +97,65 @@ class OpenClawAgentTransport:
             raise ValueError("delivery payload has no renderable presentation")
         return presentation
 
+    @classmethod
+    def _response_identity(
+        cls, decoded: dict[str, object], expected_channel_id: str
+    ) -> tuple[str, str] | None:
+        """Find a valid Discord identity in the bounded OpenClaw response envelope."""
+
+        pending: list[object] = [decoded]
+        visited: set[int] = set()
+        for _ in range(64):
+            if not pending:
+                break
+            current = pending.pop(0)
+            if not isinstance(current, (dict, list)):
+                continue
+            marker = id(current)
+            if marker in visited:
+                continue
+            visited.add(marker)
+            if isinstance(current, dict):
+                message_id = next(
+                    (
+                        current.get(key)
+                        for key in ("messageId", "message_id", "id")
+                        if isinstance(current.get(key), str)
+                    ),
+                    None,
+                )
+                channel_id = next(
+                    (
+                        current.get(key)
+                        for key in ("channelId", "channel_id", "chatId")
+                        if isinstance(current.get(key), str)
+                    ),
+                    None,
+                )
+                if (
+                    isinstance(message_id, str)
+                    and cls._SNOWFLAKE.fullmatch(message_id) is not None
+                    and channel_id == expected_channel_id
+                ):
+                    return message_id, channel_id
+                for key in (
+                    "payload",
+                    "result",
+                    "sendResult",
+                    "send_result",
+                    "data",
+                    "receipt",
+                    "results",
+                    "items",
+                    "parts",
+                ):
+                    child = current.get(key)
+                    if isinstance(child, (dict, list)):
+                        pending.append(child)
+            else:
+                pending.extend(current)
+        return None
+
     def send(self, delivery: DeliveryRecord) -> SentMessage:
         payload_path = Path(delivery.payload_path)
         if not payload_path.is_file():
@@ -149,31 +208,10 @@ class OpenClawAgentTransport:
             raise ValueError("openclaw response is not valid JSON") from error
         if not isinstance(decoded, dict):
             raise TypeError("openclaw response must be a JSON object")
-        message_id = decoded.get(
-            "messageId", decoded.get("message_id", decoded.get("id"))
-        )
-        channel_id = decoded.get("channelId", decoded.get("channel_id"))
-        payload = decoded.get("payload")
-        if isinstance(payload, dict):
-            result_payload = payload.get("result")
-            if isinstance(result_payload, dict):
-                message_id = message_id or result_payload.get(
-                    "messageId",
-                    result_payload.get("message_id", result_payload.get("id")),
-                )
-                channel_id = channel_id or result_payload.get(
-                    "channelId", result_payload.get("channel_id")
-                )
-            message_id = message_id or payload.get(
-                "messageId", payload.get("message_id", payload.get("id"))
-            )
-            channel_id = channel_id or payload.get("channelId", payload.get("channel_id"))
-        if (
-            not isinstance(message_id, str)
-            or self._SNOWFLAKE.fullmatch(message_id) is None
-            or channel_id != delivery.channel_id
-        ):
+        identity = self._response_identity(decoded, delivery.channel_id)
+        if identity is None:
             raise ValueError("OpenClaw response has an invalid identity")
+        message_id, _channel_id = identity
         return SentMessage(
             message_id,
             f"https://discord.com/channels/{self.guild_id}/{delivery.channel_id}/{message_id}",

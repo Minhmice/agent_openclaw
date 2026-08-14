@@ -192,3 +192,69 @@ def test_openclaw_transport_rejects_mismatched_response_channel(
 
     with pytest.raises(ValueError, match="identity"):
         OpenClawAgentTransport(guild_id=GUILD_ID).send(record)
+
+
+def test_openclaw_transport_accepts_nested_send_result_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = tmp_path / "delivery.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "components": {
+                    "blocks": [
+                        {
+                            "type": "actions",
+                            "buttons": [
+                                {
+                                    "label": "Approve",
+                                    "callbackData": "openclaw-web:project:project-1:approve",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "openclaw_web.delivery.openclaw_transport.subprocess.run",
+        lambda *_args, **_kwargs: type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {
+                        "action": "send",
+                        "channel": "discord",
+                        "dryRun": False,
+                        "handledBy": "core",
+                        "payload": {
+                            "sendResult": {
+                                "result": {
+                                    "messageId": MESSAGE_ID,
+                                    "channelId": CHANNEL_ID,
+                                }
+                            }
+                        },
+                    }
+                ),
+                "stderr": "",
+            },
+        )(),
+    )
+    record = DeliveryRecord(
+        delivery_id="delivery-1",
+        event_type="review-card",
+        project_id="project-1",
+        channel_id=CHANNEL_ID,
+        payload_path=str(payload),
+        idempotency_key="review:project-1",
+        status=DeliveryState.PENDING,
+    )
+
+    sent = OpenClawAgentTransport(guild_id=GUILD_ID).send(record)
+
+    assert sent.message_id == MESSAGE_ID
