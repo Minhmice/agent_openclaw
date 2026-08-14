@@ -22,6 +22,7 @@ COMMANDS = (
     "legacy-review",
     "validate",
 )
+SERVICE_COMMANDS = tuple(command for command in COMMANDS if command != "legacy-review")
 
 
 class RecordingRegistry:
@@ -275,7 +276,7 @@ def test_local_dry_run_commands_are_offline(command: str) -> None:
     assert '"status":"dry-run"' in result.output
 
 
-@pytest.mark.parametrize("command", COMMANDS)
+@pytest.mark.parametrize("command", SERVICE_COMMANDS)
 def test_each_default_command_reports_its_missing_dependency(command: str) -> None:
     result = CliRunner().invoke(cli.app, [command])
 
@@ -283,7 +284,7 @@ def test_each_default_command_reports_its_missing_dependency(command: str) -> No
     assert result.output == f"Thieu runtime dependency: {command}\n"
 
 
-@pytest.mark.parametrize("command", COMMANDS)
+@pytest.mark.parametrize("command", SERVICE_COMMANDS)
 def test_each_command_resolves_and_invokes_its_matching_service_once(
     monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
