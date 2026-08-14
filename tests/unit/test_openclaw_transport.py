@@ -72,11 +72,10 @@ def test_openclaw_transport_sends_presentation_through_stdin_without_model(
                         "channel": "discord",
                         "dryRun": False,
                         "handledBy": "core",
-                        "messageId": MESSAGE_ID,
                         "payload": {
                             "result": {
-                                "messageId": MESSAGE_ID,
-                                "channelId": CHANNEL_ID,
+                                "id": MESSAGE_ID,
+                                "channel_id": CHANNEL_ID,
                             }
                         },
                     }
@@ -168,11 +167,10 @@ def test_openclaw_transport_rejects_mismatched_response_channel(
                 "returncode": 0,
                 "stdout": json.dumps(
                     {
-                        "messageId": MESSAGE_ID,
                         "payload": {
                             "result": {
-                                "messageId": MESSAGE_ID,
-                                "channelId": "1536658476288450631",
+                                "id": MESSAGE_ID,
+                                "channel_id": "1536658476288450631",
                             }
                         },
                     }

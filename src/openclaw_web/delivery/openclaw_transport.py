@@ -144,19 +144,24 @@ class OpenClawAgentTransport:
             raise ValueError("openclaw response is not valid JSON") from error
         if not isinstance(decoded, dict):
             raise TypeError("openclaw response must be a JSON object")
-        message_id = decoded.get("messageId", decoded.get("message_id"))
+        message_id = decoded.get(
+            "messageId", decoded.get("message_id", decoded.get("id"))
+        )
         channel_id = decoded.get("channelId", decoded.get("channel_id"))
         payload = decoded.get("payload")
         if isinstance(payload, dict):
             result_payload = payload.get("result")
             if isinstance(result_payload, dict):
                 message_id = message_id or result_payload.get(
-                    "messageId", result_payload.get("message_id")
+                    "messageId",
+                    result_payload.get("message_id", result_payload.get("id")),
                 )
                 channel_id = channel_id or result_payload.get(
                     "channelId", result_payload.get("channel_id")
                 )
-            message_id = message_id or payload.get("messageId", payload.get("message_id"))
+            message_id = message_id or payload.get(
+                "messageId", payload.get("message_id", payload.get("id"))
+            )
             channel_id = channel_id or payload.get("channelId", payload.get("channel_id"))
         if (
             not isinstance(message_id, str)
