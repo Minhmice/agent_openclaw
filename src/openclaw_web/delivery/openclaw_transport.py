@@ -43,6 +43,60 @@ class OpenClawAgentTransport:
             "--json",
         ]
 
+    @staticmethod
+    def _message_presentation(components: dict[str, object]) -> dict[str, object]:
+        """Translate the persisted Discord v2 spec to OpenClaw's shared presentation shape."""
+
+        blocks = components.get("blocks")
+        if not isinstance(blocks, list):
+            raise ValueError("delivery payload is missing presentation blocks")
+        presentation: dict[str, object] = {}
+        title = components.get("title")
+        if isinstance(title, str) and title.strip():
+            presentation["title"] = title
+        output_blocks: list[dict[str, object]] = []
+        for raw_block in blocks:
+            if not isinstance(raw_block, dict):
+                continue
+            block_type = raw_block.get("type")
+            if block_type in {"text", "context", "divider", "buttons"}:
+                output_blocks.append(dict(raw_block))
+                continue
+            if block_type != "actions":
+                continue
+            raw_buttons = raw_block.get("buttons")
+            if not isinstance(raw_buttons, list):
+                continue
+            buttons: list[dict[str, object]] = []
+            for raw_button in raw_buttons:
+                if not isinstance(raw_button, dict):
+                    continue
+                label = raw_button.get("label")
+                callback = raw_button.get("callbackData")
+                if not isinstance(label, str) or not label.strip():
+                    continue
+                if not isinstance(callback, str) or not callback.strip():
+                    continue
+                callback_kind = raw_button.get("callbackDataKind")
+                action_type = callback_kind if callback_kind in {"command", "callback"} else "callback"
+                action_key = "command" if action_type == "command" else "value"
+                button: dict[str, object] = {
+                    "label": label,
+                    "action": {"type": action_type, action_key: callback},
+                    "reusable": True,
+                }
+                style = raw_button.get("style")
+                if isinstance(style, str) and style:
+                    button["style"] = style
+                buttons.append(button)
+            if buttons:
+                output_blocks.append({"type": "buttons", "buttons": buttons})
+        if output_blocks:
+            presentation["blocks"] = output_blocks
+        if not presentation:
+            raise ValueError("delivery payload has no renderable presentation")
+        return presentation
+
     def send(self, delivery: DeliveryRecord) -> SentMessage:
         payload_path = Path(delivery.payload_path)
         if not payload_path.is_file():
@@ -58,7 +112,7 @@ class OpenClawAgentTransport:
         if self._SNOWFLAKE.fullmatch(delivery.channel_id) is None:
             raise ValueError("delivery channel_id must be a Discord snowflake")
         presentation = json.dumps(
-            envelope["components"],
+            self._message_presentation(envelope["components"]),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -92,6 +146,18 @@ class OpenClawAgentTransport:
             raise TypeError("openclaw response must be a JSON object")
         message_id = decoded.get("messageId", decoded.get("message_id"))
         channel_id = decoded.get("channelId", decoded.get("channel_id"))
+        payload = decoded.get("payload")
+        if isinstance(payload, dict):
+            result_payload = payload.get("result")
+            if isinstance(result_payload, dict):
+                message_id = message_id or result_payload.get(
+                    "messageId", result_payload.get("message_id")
+                )
+                channel_id = channel_id or result_payload.get(
+                    "channelId", result_payload.get("channel_id")
+                )
+            message_id = message_id or payload.get("messageId", payload.get("message_id"))
+            channel_id = channel_id or payload.get("channelId", payload.get("channel_id"))
         if (
             not isinstance(message_id, str)
             or self._SNOWFLAKE.fullmatch(message_id) is None

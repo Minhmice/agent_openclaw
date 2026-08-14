@@ -35,17 +35,17 @@ def test_openclaw_transport_sends_presentation_through_stdin_without_model(
             {
                 "component_set": {"project_id": "project-1"},
                 "components": {
-                    "title": "Duyệt lead",
+                    "reusable": True,
                     "blocks": [
                         {
-                            "type": "buttons",
+                            "type": "actions",
                             "buttons": [
                                 {
                                     "label": "Approve",
-                                    "action": {
-                                        "type": "command",
-                                        "command": "/approve project-1",
-                                    },
+                                    "style": "success",
+                                    "callbackData": "openclaw-web:project:project-1:approve",
+                                    "callbackDataKind": "callback",
+                                    "allowedUsers": [GUILD_ID],
                                 }
                             ],
                         }
@@ -68,9 +68,17 @@ def test_openclaw_transport_sends_presentation_through_stdin_without_model(
                 "returncode": 0,
                 "stdout": json.dumps(
                     {
+                        "action": "send",
+                        "channel": "discord",
+                        "dryRun": False,
+                        "handledBy": "core",
                         "messageId": MESSAGE_ID,
-                        "channelId": CHANNEL_ID,
-                        "receipt": {"kind": "card"},
+                        "payload": {
+                            "result": {
+                                "messageId": MESSAGE_ID,
+                                "channelId": CHANNEL_ID,
+                            }
+                        },
                     }
                 ),
                 "stderr": "",
@@ -102,7 +110,24 @@ def test_openclaw_transport_sends_presentation_through_stdin_without_model(
     ]
     assert argv[7:9] == [f"channel:{CHANNEL_ID}", "--message"]
     assert argv[9:11] == ["Duyệt lead project-1", "--presentation"]
-    assert json.loads(str(argv[11])) == json.loads(payload.read_text(encoding="utf-8"))["components"]
+    assert json.loads(str(argv[11])) == {
+        "blocks": [
+            {
+                "type": "buttons",
+                "buttons": [
+                    {
+                        "label": "Approve",
+                        "style": "success",
+                        "action": {
+                            "type": "callback",
+                            "value": "openclaw-web:project:project-1:approve",
+                        },
+                        "reusable": True,
+                    }
+                ],
+            }
+        ]
+    }
     assert seen["input"] is None
     assert sent.message_id == MESSAGE_ID
     assert sent.message_url == (
@@ -115,7 +140,23 @@ def test_openclaw_transport_rejects_mismatched_response_channel(
 ) -> None:
     payload = tmp_path / "delivery.json"
     payload.write_text(
-        json.dumps({"components": {"reusable": True, "blocks": []}}),
+        json.dumps(
+            {
+                "components": {
+                    "blocks": [
+                        {
+                            "type": "actions",
+                            "buttons": [
+                                {
+                                    "label": "Approve",
+                                    "callbackData": "openclaw-web:project:project-1:approve",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -126,7 +167,15 @@ def test_openclaw_transport_rejects_mismatched_response_channel(
             {
                 "returncode": 0,
                 "stdout": json.dumps(
-                    {"messageId": MESSAGE_ID, "channelId": "1536658476288450631"}
+                    {
+                        "messageId": MESSAGE_ID,
+                        "payload": {
+                            "result": {
+                                "messageId": MESSAGE_ID,
+                                "channelId": "1536658476288450631",
+                            }
+                        },
+                    }
                 ),
                 "stderr": "",
             },
