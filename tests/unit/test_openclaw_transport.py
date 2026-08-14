@@ -13,13 +13,15 @@ CHANNEL_ID = "1536658476288450630"
 MESSAGE_ID = "1537000000000000000"
 
 
-def test_openclaw_transport_builds_fixed_plugin_command() -> None:
+def test_openclaw_transport_builds_core_message_command() -> None:
     command = OpenClawAgentTransport.build_command()
 
     assert command == [
         "openclaw",
-        "openclaw-web",
+        "message",
         "send",
+        "--channel",
+        "discord",
         "--json",
     ]
 
@@ -65,7 +67,11 @@ def test_openclaw_transport_sends_presentation_through_stdin_without_model(
             {
                 "returncode": 0,
                 "stdout": json.dumps(
-                    {"message_id": MESSAGE_ID, "channel_id": CHANNEL_ID}
+                    {
+                        "messageId": MESSAGE_ID,
+                        "channelId": CHANNEL_ID,
+                        "receipt": {"kind": "card"},
+                    }
                 ),
                 "stderr": "",
             },
@@ -84,17 +90,20 @@ def test_openclaw_transport_sends_presentation_through_stdin_without_model(
 
     sent = OpenClawAgentTransport(guild_id=GUILD_ID).send(record)
 
-    assert seen["argv"] == OpenClawAgentTransport.build_command()
-    stdin = json.loads(str(seen["input"]))
-    assert stdin == {
-        "channel_id": CHANNEL_ID,
-        "components": json.loads(payload.read_text(encoding="utf-8"))["components"],
-        "guild_id": GUILD_ID,
-        "idempotency_key": "review:project-1",
-        "text": "Duyệt lead project-1",
-    }
-    assert "project-1" not in seen["argv"]
-    assert "--presentation" not in seen["argv"]
+    argv = seen["argv"]
+    assert argv[:7] == [
+        "openclaw",
+        "message",
+        "send",
+        "--channel",
+        "discord",
+        "--json",
+        "--target",
+    ]
+    assert argv[7:9] == [f"channel:{CHANNEL_ID}", "--message"]
+    assert argv[9:11] == ["Duyệt lead project-1", "--presentation"]
+    assert json.loads(str(argv[11])) == json.loads(payload.read_text(encoding="utf-8"))["components"]
+    assert seen["input"] is None
     assert sent.message_id == MESSAGE_ID
     assert sent.message_url == (
         f"https://discord.com/channels/{GUILD_ID}/{CHANNEL_ID}/{MESSAGE_ID}"
@@ -117,7 +126,7 @@ def test_openclaw_transport_rejects_mismatched_response_channel(
             {
                 "returncode": 0,
                 "stdout": json.dumps(
-                    {"message_id": MESSAGE_ID, "channel_id": "1536658476288450631"}
+                    {"messageId": MESSAGE_ID, "channelId": "1536658476288450631"}
                 ),
                 "stderr": "",
             },

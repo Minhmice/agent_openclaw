@@ -36,8 +36,10 @@ class OpenClawAgentTransport:
     def build_command() -> list[str]:
         return [
             "openclaw",
-            "openclaw-web",
+            "message",
             "send",
+            "--channel",
+            "discord",
             "--json",
         ]
 
@@ -55,47 +57,47 @@ class OpenClawAgentTransport:
             raise TypeError("delivery payload is missing presentation components")
         if self._SNOWFLAKE.fullmatch(delivery.channel_id) is None:
             raise ValueError("delivery channel_id must be a Discord snowflake")
-        request = json.dumps(
-            {
-                "channel_id": delivery.channel_id,
-                "components": envelope["components"],
-                "guild_id": self.guild_id,
-                "idempotency_key": delivery.idempotency_key,
-                "text": f"Duyệt lead {delivery.project_id}",
-            },
+        presentation = json.dumps(
+            envelope["components"],
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
         )
-        if len(request.encode("utf-8")) > 65_536:
-            raise ValueError("delivery payload is too large for the plugin bridge")
+        if len(presentation.encode("utf-8")) > 65_536:
+            raise ValueError("delivery payload is too large for the OpenClaw CLI")
+        command = [
+            *self.build_command(),
+            "--target",
+            f"channel:{delivery.channel_id}",
+            "--message",
+            f"Duyệt lead {delivery.project_id}",
+            "--presentation",
+            presentation,
+        ]
         result = subprocess.run(
-            self.build_command(),
+            command,
             shell=False,
             check=False,
             capture_output=True,
             text=True,
-            input=f"{request}\n",
             timeout=self.timeout_seconds,
         )
         if result.returncode != 0:
-            raise RuntimeError("OpenClaw plugin send returned a non-zero exit status")
+            raise RuntimeError("OpenClaw message send returned a non-zero exit status")
         try:
             decoded = json.loads(result.stdout)
         except (TypeError, json.JSONDecodeError) as error:
             raise ValueError("openclaw response is not valid JSON") from error
         if not isinstance(decoded, dict):
             raise TypeError("openclaw response must be a JSON object")
-        if set(decoded) != {"channel_id", "message_id"}:
-            raise ValueError("OpenClaw plugin response has an invalid identity")
-        message_id = decoded["message_id"]
-        channel_id = decoded["channel_id"]
+        message_id = decoded.get("messageId", decoded.get("message_id"))
+        channel_id = decoded.get("channelId", decoded.get("channel_id"))
         if (
             not isinstance(message_id, str)
             or self._SNOWFLAKE.fullmatch(message_id) is None
             or channel_id != delivery.channel_id
         ):
-            raise ValueError("OpenClaw plugin response has an invalid identity")
+            raise ValueError("OpenClaw response has an invalid identity")
         return SentMessage(
             message_id,
             f"https://discord.com/channels/{self.guild_id}/{delivery.channel_id}/{message_id}",

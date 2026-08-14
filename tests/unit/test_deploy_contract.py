@@ -35,6 +35,7 @@ def test_installer_owns_exact_nonsecret_environment_contract() -> None:
     assert "OPENCLAW_WEB_RUBRIC_CONFIG" not in installer
     assert "1536658476288450630" in installer
     assert "chmod 0600" in installer
+    assert 'export PATH="$HOME/.local/share/openclaw-web/tools/node_modules/.bin:$PATH"' in installer
     assert "source \"$env_file\"" not in installer
     assert "cat \"$env_file\"" not in installer
 

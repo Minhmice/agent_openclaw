@@ -20,6 +20,7 @@ case "$backup_root" in "$home/.openclaw/backups"/*) ;; *) echo "backup root must
 app_root="$HOME/.local/share/openclaw-web"
 releases="$app_root/releases"
 current="$app_root/current"
+export PATH="$HOME/.local/share/openclaw-web/tools/node_modules/.bin:$PATH"
 workflow="$HOME/.openclaw/workflow"
 workspace_workflow="$HOME/.openclaw/workspace/workflow"
 workflow_roots=("$workflow" "$workspace_workflow")
