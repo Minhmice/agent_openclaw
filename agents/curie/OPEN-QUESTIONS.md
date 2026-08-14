@@ -1,34 +1,21 @@
 # Open Questions
 
-## 1. MVP market scope — awaiting user answer
+## 1. MVP market scope — decided
 
-Choose one starting scope:
+The discovery market is intentionally broad by industry but bounded geographically:
 
-### Option A — One industry + one city/province (recommended)
+- Market ID: hanoi-80km
+- Industries: đa ngành
+- Region: quanh Hà Nội (within the configured Hanoi radius)
 
-Example: high-end interior businesses in Ho Chi Minh City.
-
-Pros: lower noise, easier discovery calibration, easier business-score validation, easier to judge whether the daily #1 lead is genuinely useful.
-
-Cons: smaller initial coverage.
-
-### Option B — One industry across Vietnam
-
-Pros: broader coverage and more candidate volume.
-
-Cons: more local-market noise, different buyer behavior, harder scoring calibration.
-
-### Option C — Many industries + many locations
-
-Pros: maximum discovery breadth.
-
-Cons: high noise, difficult scoring calibration, unclear definition of a good lead, and poor feedback loop for the first MVP.
+The geofence remains fail-closed when a source cannot provide reliable coordinates or
+administrative evidence. Discovery providers may cover multiple cohorts, but every
+candidate still needs public evidence and defensible audit findings before review.
 
 ## Later decisions
 
-After market scope, decide:
+The market scope is now fixed. Continue to calibrate:
 
-- First industry and location.
 - Discovery sources and API budget.
 - Daily candidate volume.
 - Whether the dashboard is local HTML or deployed.
