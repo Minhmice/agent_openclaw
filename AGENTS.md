@@ -11,6 +11,13 @@ This repository is an operational runbook for a remote OpenClaw instance. Before
 
 The OpenClaw workflow agents communicate with Minh and Wien in Vietnamese. Read [agents/shared/VIETNAMESE-LANGUAGE-POLICY.md](agents/shared/VIETNAMESE-LANGUAGE-POLICY.md) when working on `main`, `curie`, `website-brief`, or `project-pm`. Preserve command names, IDs, URLs, paths, state names, and JSON/YAML keys exactly.
 
+## Workflow state and discovery guardrails
+
+- The canonical runtime state root is `/home/minhmice/.openclaw/workflow`; project JSON, message tracking, and `WORKLOG.md` live there.
+- `/home/minhmice/.openclaw/workspace/workflow` is the shared instruction/schema tree. It does not contain runtime project state; do not read or create `/home/minhmice/.openclaw/workspace/workflow/projects`.
+- Discord channel sends must use `--channel discord --target channel:<id>` (or the equivalent message-tool target `channel="discord"`, `target="channel:<id>"`). Never retry a bare numeric target after an `Ambiguous Discord recipient` error.
+- If `sessions_spawn` is forbidden or a discovery provider is unavailable, stop the discovery attempt and report a bounded `no_candidate_defensible`/`partial` result. Do not let `main` run an unbounded ad-hoc search or `exec` loop.
+
 ## Operating rules
 
 - Treat the remote host as the source of truth. The dated status in README is only a last-known baseline.

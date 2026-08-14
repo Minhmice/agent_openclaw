@@ -5,6 +5,9 @@
 - Use `sessions_spawn` with `agentId: "curie"` and `cleanup: "keep"`, or omit `cleanup`.
 - Do not use `cleanup: "delete"` for this workflow. Archive cleanup is secondary to delivery.
 - Keep the task isolated and tell Curie to return one detailed Vietnamese dossier plus image inventory.
+- The requester must be explicitly allowed to target Curie through `agents.list[0].subagents.allowAgents: ["curie"]`; a forbidden spawn is a configuration failure, not permission to make `main` do the discovery itself.
+- Keep discovery bounded: at most three search attempts, three candidate fetches, three crawl pages, and one dossier. If `web_search` is unavailable, do not fall back to repeated ad-hoc `exec`/DuckDuckGo loops; return `no_candidate_defensible` or `partial` with the evidence gap.
+- Read project state only from `/home/minhmice/.openclaw/workflow/projects`; `/home/minhmice/.openclaw/workspace/workflow` is the shared context tree.
 
 ## Completion
 

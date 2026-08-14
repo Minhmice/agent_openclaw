@@ -43,6 +43,7 @@ class WorkflowCoordinatorTests(unittest.TestCase):
     def run_cmd(self, *args):
         env = os.environ.copy()
         env["OPENCLAW_WORKFLOW_ROOT"] = str(self.root)
+        env["PYTHONIOENCODING"] = "utf-8"
         return subprocess.run(
             [sys.executable, str(SCRIPT), *args],
             env=env,
@@ -80,6 +81,22 @@ class WorkflowCoordinatorTests(unittest.TestCase):
         self.assertEqual(project["status"], "approved")
         self.assertEqual(project["approved_by"], WIEN)
         self.assertEqual(project["state_version"], before + 1)
+
+    def test_reject_is_idempotent_when_project_already_rejected_with_same_reason(self):
+        reason = "cũng đèm đẹp rồi, không nên sửa"
+        self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)
+        self.assertEqual(
+            self.run_cmd("lead-reject", "acme-demo", reason, "--actor", MINH).returncode,
+            0,
+        )
+
+        result = self.run_cmd("lead-reject", "acme-demo", reason, "--actor", MINH)
+
+        self.assertEqual(result.returncode, 0)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "rejected")
+        self.assertTrue(payload["idempotent"])
+        self.assertEqual(self.load_project()["rejection_reason"], reason)
 
     def test_page_approval_rejects_incomplete_checklist(self):
         self.project["pages"][0]["checklist"][0]["status"] = "pending"

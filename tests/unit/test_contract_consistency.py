@@ -55,3 +55,20 @@ def test_operational_runbook_covers_local_market_cron_and_rollback() -> None:
         "openclaw-web cron-run --dry-run",
     ):
         assert required in runbook
+
+
+def test_discuss_discovery_contract_is_bounded_and_uses_canonical_runtime_paths() -> None:
+    root = _repo_root()
+    coordinator = (root / "agents/shared/COORDINATOR.md").read_text(encoding="utf-8")
+    intent = (root / "agents/shared/contracts/discuss-intents.md").read_text(encoding="utf-8")
+    handoff = (root / "agents/shared/contracts/curie-handoff.md").read_text(encoding="utf-8")
+
+    docs = f"{coordinator}\n{intent}\n{handoff}"
+    assert "target=\"channel:<id>\"" in docs
+    assert "/home/minhmice/.openclaw/workflow/projects/<project_id>" in docs
+    assert "/home/minhmice/.openclaw/workspace/workflow/projects" in docs
+    assert "shared instructions" in docs
+    assert "sessions_spawn" in docs and "allowAgents" in docs
+    assert "Do not fall back to" in docs and "web_search" in docs
+    assert "return `no_candidate_defensible`" in docs
+    assert "bounded" in docs.lower()

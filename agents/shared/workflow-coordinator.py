@@ -206,11 +206,21 @@ def cmd_approve(args: argparse.Namespace) -> None:
 def cmd_reject(args: argparse.Namespace) -> None:
     require_actor(args.actor, {MINH_ID})
     project = load(args.project_id)
-    if project.get("status") != "review":
-        raise ValueError("project must be in review state")
     reason = args.reason.strip()
     if not reason:
         raise ValueError("rejection reason is required")
+    if project.get("status") == "rejected":
+        existing_reason = str(
+            project.get("rejection_reason") or project.get("discard_reason") or ""
+        ).strip()
+        if existing_reason == reason:
+            log("review-reject-idempotent", project["project_id"], f"actor={args.actor}")
+            result = dict(project)
+            result["idempotent"] = True
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+    if project.get("status") != "review":
+        raise ValueError("project must be in review state")
     project["status"] = "rejected"
     project["rejected_by"] = args.actor
     project["rejected_at"] = now()
