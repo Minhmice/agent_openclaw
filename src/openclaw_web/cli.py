@@ -138,6 +138,22 @@ def delivery(
     _run_service("delivery")
 
 
+@app.command("legacy-review", help="Gui mot Curie legacy project thanh review card native.")
+def legacy_review(
+    project_id: str = typer.Option(..., "--project-id", help="Project ID trong workflow root."),
+    json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
+) -> None:
+    from openclaw_web.review.legacy import LegacyReviewError
+    from openclaw_web.runtime import run_legacy_review
+
+    try:
+        result = run_legacy_review(project_id)
+    except (LegacyReviewError, OSError, RuntimeError, ValueError) as exc:
+        typer.echo(f"Khong the gui legacy review card: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    _emit(result, json_output=json_output)
+
+
 @app.command("cron-run", help="Chay discovery dinh ky voi khoa chong chay trung.")
 def cron_run(
     dry_run: bool = typer.Option(False, "--dry-run", help="Khong acquire lock, crawl hoac gui Discord."),

@@ -6,9 +6,10 @@ import asyncio
 import json
 import os
 import re
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -21,6 +22,7 @@ from openclaw_web.delivery.components import (
     ComponentActionEnvelope,
     ComponentActionService,
     ComponentSetRecord,
+    build_review_card,
     component_record,
     parse_component_action_json,
 )
@@ -34,11 +36,17 @@ from openclaw_web.discovery.serper import SerperDiscoverySource
 from openclaw_web.models import DeliveryRecord, DeliveryState, ProjectState
 from openclaw_web.pipeline.cron import CronResult, CronRunner
 from openclaw_web.pipeline.production import ProductionPipeline, ProductionProject
+from openclaw_web.review.legacy import (
+    LegacyReviewError,
+    load_legacy_review_project,
+    render_legacy_review_message,
+)
 from openclaw_web.scoring.rules import Rubric, load_rubric
 from openclaw_web.screenshots import ScreenshotRunner
 from openclaw_web.settings import MarketConfig, load_market
 
 DEFAULT_DISCORD_GUILD_ID = "1446612692910739637"
+DEFAULT_DISCORD_REVIEW_CHANNEL_ID = "1536658476288450630"
 
 
 def _state_db() -> Path:
@@ -51,6 +59,152 @@ def _discord_guild_id() -> str:
     if not configured:
         raise RuntimeError("OPENCLAW_WEB_DISCORD_GUILD_ID is not configured")
     return configured
+
+
+def _legacy_artifact_root(override: Path | None) -> Path:
+    if override is not None:
+        return override
+    configured = os.environ.get("OPENCLAW_WEB_ARTIFACT_ROOT")
+    if configured:
+        return Path(configured).expanduser() / "legacy"
+    return Path.home() / ".local/share/openclaw-web/legacy-artifacts"
+
+
+def _legacy_created_at(
+    project: dict[str, object], repository: Repository, project_id: str, fallback: datetime
+) -> datetime:
+    raw = project.get("created_at")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                return parsed.astimezone(UTC)
+        except ValueError:
+            pass
+    row = repository.connection.execute(
+        "SELECT snapshot_json FROM projects WHERE project_id = ?", (project_id,)
+    ).fetchone()
+    if row is not None:
+        try:
+            persisted = json.loads(str(row["snapshot_json"]))
+            persisted_created = persisted.get("created_at") if isinstance(persisted, dict) else None
+            if isinstance(persisted_created, str):
+                parsed = datetime.fromisoformat(persisted_created.replace("Z", "+00:00"))
+                if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    return parsed.astimezone(UTC)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    return fallback
+
+
+def run_legacy_review(
+    project_id: str,
+    *,
+    workflow_root: Path | None = None,
+    review_channel: str | None = None,
+    guild_id: str | None = None,
+    artifact_root: Path | None = None,
+) -> dict[str, object]:
+    """Bridge one legacy Curie project into the durable native-card outbox."""
+
+    root = workflow_root or _workflow_root()
+    project_dir = root / "projects" / project_id
+    project, dossier = load_legacy_review_project(project_dir, project_id)
+    channel = (
+        review_channel
+        or os.environ.get("OPENCLAW_WEB_REVIEW_CHANNEL")
+        or os.environ.get("OPENCLAW_WEB_REVIEW_CHANNEL_ID")
+        or DEFAULT_DISCORD_REVIEW_CHANNEL_ID
+    ).strip()
+    guild = (guild_id or os.environ.get("OPENCLAW_WEB_DISCORD_GUILD_ID") or DEFAULT_DISCORD_GUILD_ID).strip()
+    if not channel or not channel.isdigit() or not guild or not guild.isdigit():
+        raise LegacyReviewError("Discord review identity is not configured")
+    business_name = project.get("business_name")
+    website = project.get("website")
+    if not isinstance(business_name, str) or not business_name.strip():
+        raise LegacyReviewError("legacy project business_name is missing")
+    if not isinstance(website, str) or not website.strip():
+        raise LegacyReviewError("legacy project website is missing")
+    message = render_legacy_review_message(project, dossier)
+    now = datetime.now(UTC)
+    component_set_id = f"component-{uuid.uuid5(uuid.NAMESPACE_URL, f'component:{project_id}:review:v0').hex}"
+    expires_at = now + timedelta(hours=24)
+    artifact_dir = _legacy_artifact_root(artifact_root) / project_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    payload_path = artifact_dir / "review-card.json"
+    payload = {
+        "component_set": {
+            "component_set_id": component_set_id,
+            "project_id": project_id,
+            "card_type": "review",
+            "allowed_actions": ["approve", "view-evidence", "refresh"],
+            "expires_at": expires_at.isoformat(),
+            "state_version": 0,
+            "project_state": ProjectState.REVIEW.value,
+        },
+        "message": message,
+        "components": build_review_card(project_id).payload,
+    }
+    payload_path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    connection = connect(_state_db())
+    try:
+        migrate(connection)
+        repository = Repository(connection)
+        candidate = repository.upsert_candidate(str(website), str(business_name), None)
+        created_at = _legacy_created_at(project, repository, project_id, now)
+        repository.ensure_review_project(
+            _MutableReviewProject(
+                project_id=project_id,
+                candidate_id=candidate.candidate_id,
+                market_id="hanoi-80km",
+                artifact_dir=str(artifact_dir),
+                created_at=created_at,
+            )
+        )
+        delivery_id = f"delivery-{uuid.uuid5(uuid.NAMESPACE_URL, f'delivery:{project_id}:review').hex}"
+        delivery = DeliveryRecord(
+            delivery_id=delivery_id,
+            event_type="review-card",
+            project_id=project_id,
+            channel_id=channel,
+            payload_path=str(payload_path),
+            idempotency_key=f"review:{project_id}",
+            status=DeliveryState.PENDING,
+        )
+        existing_status = repository.get_delivery_status(delivery.idempotency_key)
+        if existing_status is DeliveryState.SENT:
+            existing = repository.get_delivery(delivery.delivery_id)
+            return {
+                "project_id": project_id,
+                "delivery_id": existing.delivery_id,
+                "component_set_id": component_set_id,
+                "status": existing.status.value,
+                "message_id": existing.message_id,
+                "message_url": existing.message_url,
+            }
+        repository.enqueue_delivery_once(delivery)
+        sent = OutboxWorker(
+            repository,
+            OpenClawAgentTransport(guild_id=guild),
+        ).dispatch_once()
+        persisted = repository.get_delivery(delivery.delivery_id)
+        if sent is None or persisted.status is not DeliveryState.SENT:
+            raise LegacyReviewError(
+                f"legacy review delivery did not reach sent state: {persisted.last_error or persisted.status.value}"
+            )
+        return {
+            "project_id": project_id,
+            "delivery_id": persisted.delivery_id,
+            "component_set_id": component_set_id,
+            "status": persisted.status.value,
+            "message_id": persisted.message_id,
+            "message_url": persisted.message_url,
+        }
+    finally:
+        connection.close()
 
 
 DiscoveryComposition = Callable[[], str]
@@ -358,10 +512,22 @@ def _component_read_only(component: ComponentSetRecord, action: str) -> str:
         return f"Project {component.project_id}: còn {count} page có P0/P1 chưa xử lý."
     if action == "view-evidence":
         artifact_dir = project.get("artifact_dir")
-        if not isinstance(artifact_dir, str) or not artifact_dir:
-            raise RuntimeError("workflow evidence artifact is unavailable")
-        evidence = Path(artifact_dir) / "evidence"
-        available = sorted(path.name for path in evidence.glob("*.json") if path.is_file())
+        available: list[str] = []
+        if isinstance(artifact_dir, str) and artifact_dir:
+            evidence = Path(artifact_dir) / "evidence"
+            available = sorted(path.name for path in evidence.glob("*.json") if path.is_file())
+        if not available:
+            project_dir = (_workflow_root() / "projects" / component.project_id).resolve()
+            workflow_root = _workflow_root().resolve()
+            if project_dir.parent != workflow_root / "projects":
+                raise RuntimeError("workflow evidence artifact is unavailable")
+            for key in ("dossier_file", "image_inventory_file"):
+                name = project.get(key)
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                candidate = (project_dir / name).resolve()
+                if candidate.parent == project_dir and candidate.is_file():
+                    available.append(candidate.name)
         if not available:
             raise RuntimeError("workflow evidence artifact is unavailable")
         return f"Project {component.project_id}: evidence gồm {', '.join(available)}."

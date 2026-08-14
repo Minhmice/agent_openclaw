@@ -19,6 +19,7 @@ COMMANDS = (
     "discover",
     "feedback",
     "health",
+    "legacy-review",
     "validate",
 )
 
@@ -96,6 +97,27 @@ def test_delivery_json_drains_the_real_outbox(monkeypatch: pytest.MonkeyPatch) -
         "sent": 1,
         "status": "sent",
     }
+
+
+def test_legacy_review_json_calls_the_durable_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "openclaw_web.runtime.run_legacy_review",
+        lambda project_id: calls.append(project_id)
+        or {
+            "project_id": project_id,
+            "status": "sent",
+            "message_id": "1537000000000000000",
+        },
+    )
+
+    result = CliRunner().invoke(
+        cli.app, ["legacy-review", "--project-id", "vn-ntq-test", "--json"]
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["vn-ntq-test"]
+    assert json.loads(result.output)["status"] == "sent"
 
 
 def test_component_action_reads_strict_envelope_from_stdin(
