@@ -49,7 +49,7 @@ class OpenClawAgentTransport:
 
         blocks = components.get("blocks")
         if not isinstance(blocks, list):
-            raise ValueError("delivery payload is missing presentation blocks")
+            raise TypeError("delivery payload presentation blocks must be a list")
         presentation: dict[str, object] = {}
         title = components.get("title")
         if isinstance(title, str) and title.strip():
