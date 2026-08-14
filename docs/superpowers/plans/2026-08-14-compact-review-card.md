@@ -79,7 +79,7 @@ Run `git add src/openclaw_web/review/legacy.py src/openclaw_web/review/__init__.
 - Modify: `src/openclaw_web/runtime.py`
 - Modify: `src/openclaw_web/cli.py`
 - Modify: `src/openclaw_web/runtime.py` evidence fallback near `_component_read_only`
-- Test: `tests/unit/test_runtime.py`, `tests/unit/test_cli.py`, `tests/integration/test_legacy_review.py`
+- Test: `tests/unit/test_runtime.py`, `tests/unit/test_cli.py`, `tests/integration/test_legacy_review_runtime.py`
 
 - [ ] **Step 1: Write failing service/integration tests**
 
@@ -87,7 +87,7 @@ Use a temporary workflow root, temporary SQLite state DB, a project JSON in `pro
 
 - [ ] **Step 2: Run focused tests and verify RED**
 
-Run `pytest tests/unit/test_runtime.py tests/unit/test_cli.py tests/integration/test_legacy_review.py -q`; it must fail because `legacy-review` and `run_legacy_review()` do not exist.
+Run `pytest tests/unit/test_runtime.py tests/unit/test_cli.py tests/integration/test_legacy_review_runtime.py -q`; it must fail because `legacy-review` and `run_legacy_review()` do not exist.
 
 - [ ] **Step 3: Implement the service**
 
@@ -108,7 +108,7 @@ In `_component_read_only`, if `artifact_dir/evidence` is absent, list only known
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
-Run `pytest tests/unit/test_runtime.py tests/unit/test_cli.py tests/integration/test_legacy_review.py -q`; all tests must pass.
+Run `pytest tests/unit/test_runtime.py tests/unit/test_cli.py tests/integration/test_legacy_review_runtime.py -q`; all tests must pass.
 
 - [ ] **Step 5: Commit**
 

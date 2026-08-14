@@ -18,8 +18,8 @@
 ## Delivery
 
 1. Write/verify the project record in `review`.
-2. Send the compact dossier to `shit-that-could-cooking` (`1536658476288450630`). Attach up to five public first-party image URLs when available. Record every message ID returned by Discord, including split-message parts.
-3. After the review send succeeds, send a Vietnamese acknowledgment to `discuss` (`1533645084229369996`) with the project ID and review location.
-4. Retry one failed send; if it still fails, report the exact failure in `discuss` and keep the project in `review`.
+2. Call `openclaw-web legacy-review --project-id <project_id> --json`. The command is the only review-card delivery path for a legacy project: it renders one compact Vietnamese message, creates native Components v2 actions, and returns the direct Discord message URL and bot message ID. Do not send the dossier as plain text or split it into multiple review messages.
+3. After the command returns `status=sent`, send one Vietnamese acknowledgment to `discuss` (`1533645084229369996`) with the project ID and returned review URL. Record the returned bot message ID with `workflow-coordinator.py record-messages`.
+4. Retry the `legacy-review` command once when delivery fails; if it still fails, report the exact failure in `discuss` and keep the project in `review`.
 
 Never auto-approve or start Website Brief/Project PM from discovery completion.

@@ -431,6 +431,45 @@ def _dossier(candidate: Candidate, audited: _AuditedCandidate) -> str:
     )
 
 
+def _compact_review_message(audited: _AuditedCandidate) -> str:
+    findings = [finding for result in audited.audits for finding in result.findings]
+    priority = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    ordered_findings = sorted(findings, key=lambda item: (priority.get(item.severity, 9), item.rule_id))
+    top_findings = []
+    seen_rule_ids: set[str] = set()
+    for finding in ordered_findings:
+        if finding.rule_id in seen_rule_ids:
+            continue
+        seen_rule_ids.add(finding.rule_id)
+        top_findings.append(finding)
+        if len(top_findings) == 3:
+            break
+    opportunities = [
+        f"{finding.severity}  {finding.rule_id}: cần review evidence trước khi thay đổi"
+        for finding in top_findings
+    ] or ["P2  Chưa có finding deterministic nổi bật."]
+    unavailable = sorted(
+        {
+            *audited.score.unavailable_inputs,
+            *(name for result in audited.audits for name in result.unavailable_inputs),
+        }
+    )
+    confidence = ", ".join(unavailable) if unavailable else "không có khoảng trống được ghi nhận"
+    evidence_count = len(_evidence_urls(audited.candidate, audited.crawl, audited.audits))
+    return (
+        f"**{audited.candidate.name} · Website review**\n"
+        f"`{audited.project_id}` · cohort `{audited.cohort}`\n\n"
+        "**WHY NOW**\n"
+        f"Audit đạt review gate với {evidence_count} public evidence URL.\n\n"
+        "**TOP OPPORTUNITIES**\n"
+        + "\n".join(opportunities)
+        + "\n\n**EVIDENCE**\n"
+        + f"{evidence_count} public URLs · audit deterministic\n\n"
+        + "**CONFIDENCE**\n"
+        + f"Dữ liệu chưa xác minh: {confidence}."
+    )
+
+
 class ProductionPipeline:
     """Run one bounded production slice and enqueue at most one review delivery."""
 
@@ -687,6 +726,7 @@ class ProductionPipeline:
                         "state_version": 0,
                         "project_state": ProjectState.REVIEW.value,
                     },
+                    "message": _compact_review_message(audited),
                     "components": review_card.payload,
                 },
             )

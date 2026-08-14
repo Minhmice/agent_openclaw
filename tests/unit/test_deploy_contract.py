@@ -178,3 +178,10 @@ def test_live_operational_docs_use_lead_approve_as_the_typed_fallback() -> None:
         document = _read(relative)
         assert "/lead-approve <project_id>" in document
         assert "/approve <project_id>" not in document
+
+
+def test_curie_handoff_requires_native_legacy_review_delivery() -> None:
+    document = _read("agents/shared/contracts/curie-handoff.md")
+
+    assert "openclaw-web legacy-review --project-id <project_id> --json" in document
+    assert "split-message" not in document

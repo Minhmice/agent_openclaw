@@ -258,6 +258,9 @@ async def test_production_run_posts_one_defensible_candidate_idempotently(tmp_pa
     score = json.loads((project_dir / "score.json").read_text(encoding="utf-8"))
     card = json.loads((project_dir / "review-card.json").read_text(encoding="utf-8"))
     dossier = (project_dir / "dossier.vi.md").read_text(encoding="utf-8")
+    assert card["message"].count("good-manufacturer.com") == 0
+    assert "**TOP OPPORTUNITIES**" in card["message"]
+    assert card["message"].count("CTA-MISSING") == 1
     assert candidate["canonical_domain"] == "good-manufacturer.com"
     assert any(item["rule_id"] == "CTA-MISSING" for item in audit["findings"])
     assert score["qualified"] is True
@@ -275,6 +278,7 @@ async def test_production_run_posts_one_defensible_candidate_idempotently(tmp_pa
             "project_state": ProjectState.REVIEW.value,
             "state_version": 0,
         },
+        "message": card["message"],
         "components": review_card.payload,
     }
     assert "channel_id" not in card["component_set"]
