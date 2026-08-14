@@ -145,6 +145,7 @@ class OpenClawAgentTransport:
                     "send_result",
                     "data",
                     "receipt",
+                    "raw",
                     "results",
                     "items",
                     "parts",
