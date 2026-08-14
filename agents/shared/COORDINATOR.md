@@ -36,6 +36,14 @@ project-pm    page checklist, schedule, reminders, final handoff
 
 Read [discuss-intents.md](contracts/discuss-intents.md). When Minh (`620891893659598850`) writes a clear Vietnamese request in `discuss` (`1533645084229369996`) such as `oke thử cho tìm một con khác đi`, classify it as `new-curie-discovery`. Acknowledge in Vietnamese, start exactly one isolated Curie run for one fresh candidate, avoid active/review project duplicates, create the result in `review`, and post it to `1536658476288450630`. This trigger never approves a lead and never starts Website Brief or Project PM. If the message is ambiguous, ask Minh to clarify.
 
+### Discovery execution guardrails
+
+- The canonical runtime state root is `/home/minhmice/.openclaw/workflow`. Project JSON, message tracking, and `WORKLOG.md` live there. `/home/minhmice/.openclaw/workspace/workflow` contains shared instructions and schemas only; never read project state from `/home/minhmice/.openclaw/workspace/workflow/projects`.
+- For every Discord message-tool call, use the explicit channel target `target="channel:<id>"` (with `channel="discord"`). Never pass a bare numeric ID as both the channel and target; that produces `Ambiguous Discord recipient` and can cause a duplicate retry.
+- `main` is allowed to spawn only the configured Curie target. Use exactly one `sessions_spawn` call with `agentId: "curie"`, then one `sessions_yield`. The OpenClaw config must contain `agents.list[0].subagents.allowAgents: ["curie"]` for the `main` profile.
+- If `sessions_spawn` returns `forbidden`, or a discovery tool reports that `web_search` is unavailable, stop the discovery attempt immediately. Do not fall back to `web_search`, ad-hoc DuckDuckGo scraping, repeated `exec` loops, or direct model research in `main`; send one concise Vietnamese failure/try-again message and append a worklog error.
+- Curie discovery is bounded: at most three search attempts, three candidate fetches, three crawl pages for the selected candidate, and one dossier. If the evidence gate cannot be met inside the sub-agent timeout, return `no_candidate_defensible` or `partial` with the reason.
+
 ## Curie completion and delivery protocol
 
 Follow [curie-handoff.md](contracts/curie-handoff.md) and [curie-report.md](contracts/curie-report.md).
@@ -64,9 +72,9 @@ Follow [curie-handoff.md](contracts/curie-handoff.md) and [curie-report.md](cont
 Use the coordinator script at `/home/minhmice/.openclaw/workflow/workflow-coordinator.py` and the command contract in `/home/minhmice/.openclaw/workflow/contracts/workflow-commands.md`.
 
 ```text
-/approve <project_id>
-/reject <project_id> <reason>
-/request-change <project_id> <note>
+/lead-approve <project_id>
+/lead-reject <project_id> <reason>
+/lead-request-change <project_id> <note>
 /status <project_id>
 /page-status <project_id> <page_slug>
 /page-done <project_id> <page_slug>
@@ -74,7 +82,9 @@ Use the coordinator script at `/home/minhmice/.openclaw/workflow/workflow-coordi
 /final-confirm <project_id>
 ```
 
-The current Discord capability does not expose native buttons/components. Treat typed commands as canonical. Accept a reaction only if the original message, actor, and project state can be verified; otherwise ask for the typed command.
+Discord Components v2 are preferred when `agentComponents.enabled` is supported. Treat the component callback and typed command as two input encodings for the same coordinator transition: both must validate actor, channel, bot-owned message, project, state version, expiry, checklist, and P0/P1 gates. If feature detection fails or a callback is stale, return the exact typed fallback command. Never accept an unverified reaction as approval.
+
+`/approve` is reserved by OpenClaw for host exec approvals. Workflow lead review uses `/lead-approve`; buttons call the deterministic plugin callback directly.
 
 ## Handoff messages
 

@@ -202,11 +202,21 @@ def cmd_approve(args: argparse.Namespace) -> None:
 def cmd_reject(args: argparse.Namespace) -> None:
     require_actor(args.actor, {MINH_ID})
     project = load(args.project_id)
-    if project.get("status") != "review":
-        raise ValueError("project must be in review state")
     reason = args.reason.strip()
     if not reason:
         raise ValueError("rejection reason is required")
+    if project.get("status") == "rejected":
+        existing_reason = str(
+            project.get("rejection_reason") or project.get("discard_reason") or ""
+        ).strip()
+        if existing_reason == reason:
+            log("review-reject-idempotent", project["project_id"], f"actor={args.actor}")
+            result = dict(project)
+            result["idempotent"] = True
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+    if project.get("status") != "review":
+        raise ValueError("project must be in review state")
     project["status"] = "rejected"
     project["rejected_by"] = args.actor
     project["rejected_at"] = now()
@@ -553,16 +563,30 @@ def parser() -> argparse.ArgumentParser:
     approve.add_argument("project_id")
     approve.add_argument("--actor", required=True)
     approve.set_defaults(func=cmd_approve)
+    lead_approve = sub.add_parser("lead-approve")
+    lead_approve.add_argument("project_id")
+    lead_approve.add_argument("--actor", required=True)
+    lead_approve.set_defaults(func=cmd_approve)
     reject = sub.add_parser("reject")
     reject.add_argument("project_id")
     reject.add_argument("reason")
     reject.add_argument("--actor", required=True)
     reject.set_defaults(func=cmd_reject)
+    lead_reject = sub.add_parser("lead-reject")
+    lead_reject.add_argument("project_id")
+    lead_reject.add_argument("reason")
+    lead_reject.add_argument("--actor", required=True)
+    lead_reject.set_defaults(func=cmd_reject)
     request_change = sub.add_parser("request-change")
     request_change.add_argument("project_id")
     request_change.add_argument("note")
     request_change.add_argument("--actor", required=True)
     request_change.set_defaults(func=cmd_request_change)
+    lead_request_change = sub.add_parser("lead-request-change")
+    lead_request_change.add_argument("project_id")
+    lead_request_change.add_argument("note")
+    lead_request_change.add_argument("--actor", required=True)
+    lead_request_change.set_defaults(func=cmd_request_change)
     page_status = sub.add_parser("page-status")
     page_status.add_argument("project_id")
     page_status.add_argument("page_slug")

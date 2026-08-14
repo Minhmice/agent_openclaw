@@ -32,13 +32,15 @@ Matching is case-insensitive and should tolerate normal punctuation/spacing. Do 
 
 When matched, `main` must:
 
-1. Immediately send a Vietnamese progress message in `discuss`, for example: `⏳ Đang tìm một candidate mới... Khi xong tao sẽ gửi link review vào đây.` Record the bot message ID.
-2. Start exactly one isolated `curie` run.
+1. Immediately send one Vietnamese progress message in `discuss`, for example: `⏳ Đang tìm một candidate mới... Khi xong tao sẽ gửi link review vào đây.` Use the Discord message target form `channel="discord"`, `target="channel:1533645084229369996"`; record the bot message ID. Do not retry a failed bare-numeric target.
+2. Start exactly one isolated `curie` run with `agentId: "curie"` (the `main` profile must have `agents.list[0].subagents.allowAgents: ["curie"]`).
 3. Tell Curie to avoid existing active/review project IDs and return exactly one evidence-backed Vietnamese dossier.
 4. Create the candidate in `review` state and post the concise dossier to review channel `1536658476288450630`.
 5. Record every review message ID returned by Discord, including split-message parts; build the direct link from the first part: `https://discord.com/channels/1446612692910739637/1536658476288450630/<message_id>`.
 6. Send a Vietnamese completion acknowledgment back to `discuss`, for example: `✅ Đã tìm được rồi. Check ở #shit-that-could-cooking: <message_link>`. Record this acknowledgment message ID.
 7. Append concise `curie-discovery-requested` and `curie-discovery-completed` events to the workflow worklog.
+
+The discovery path is bounded and fail-fast. If `sessions_spawn` is forbidden, if `web_search` is unavailable, or if the Curie timeout is reached, do not let `main` run an ad-hoc search loop. Report `no_candidate_defensible` or `partial` with a concise Vietnamese reason and append the error to `/home/minhmice/.openclaw/workflow/WORKLOG.md`.
 
 ## Hard stops
 
