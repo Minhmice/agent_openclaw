@@ -238,6 +238,42 @@ test("uses trusted Discord identities and handles the callback without an agent"
   assert.deepEqual(observed.agentCalls, []);
 });
 
+test("passes a review reject callback through to the durable bridge", async () => {
+  const observed = makeApi();
+  const callbacks = [];
+  const replies = [];
+  createTestPlugin({
+    async runCallback(envelope) {
+      callbacks.push(envelope);
+      return {
+        message_vi:
+          "Đã từ chối project-1. Lý do: Không phù hợp với tiêu chí review hiện tại. Trạng thái mới: rejected.",
+      };
+    },
+  }).register(observed.api);
+
+  const result = await observed.registration().handler(
+    callbackContext("project:project-1:reject", replies),
+  );
+
+  assert.deepEqual(callbacks, [
+    {
+      actor_id: MINH_ID,
+      guild_id: GUILD_ID,
+      message_id: MESSAGE_ID,
+      value: "project:project-1:reject",
+    },
+  ]);
+  assert.deepEqual(replies, [
+    {
+      text:
+        "Đã từ chối project-1. Lý do: Không phù hợp với tiêu chí review hiện tại. Trạng thái mới: rejected.",
+      ephemeral: true,
+    },
+  ]);
+  assert.deepEqual(result, { handled: true });
+});
+
 test("relies on host auto-ack and follows up ephemerally", async () => {
   const observed = makeApi();
   const order = [];
