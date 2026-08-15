@@ -167,6 +167,36 @@ def run_legacy_review(
                 created_at=created_at,
             )
         )
+        legacy_delivery_key = f"review:{project_id}"
+        project_row = connection.execute(
+            "SELECT state, state_version FROM projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        if (
+            project_row is not None
+            and (
+                str(project_row["state"]) != ProjectState.REVIEW.value
+                or int(project_row["state_version"]) != 0
+            )
+            and repository.get_delivery_status(legacy_delivery_key) is DeliveryState.SENT
+        ):
+            legacy_delivery_id = (
+                f"delivery-{uuid.uuid5(uuid.NAMESPACE_URL, f'delivery:{project_id}:review').hex}"
+            )
+            existing = repository.get_delivery(legacy_delivery_id)
+            existing_component_id = component_set_id
+            if existing.message_id is not None:
+                old_component = repository.get_component_set(channel, existing.message_id)
+                if old_component is not None:
+                    existing_component_id = old_component.component_set_id
+            return {
+                "project_id": project_id,
+                "delivery_id": existing.delivery_id,
+                "component_set_id": existing_component_id,
+                "status": existing.status.value,
+                "message_id": existing.message_id,
+                "message_url": str(existing.message_url) if existing.message_url is not None else None,
+            }
         delivery_key = f"review:{project_id}:{REVIEW_CARD_VERSION}"
         delivery_id = f"delivery-{uuid.uuid5(uuid.NAMESPACE_URL, f'delivery:{project_id}:review:{REVIEW_CARD_VERSION}').hex}"
         delivery = DeliveryRecord(

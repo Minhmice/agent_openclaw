@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -152,7 +153,7 @@ def test_legacy_review_reissues_v1_when_only_an_old_card_exists(
     )
     repository.enqueue_delivery(
         DeliveryRecord(
-            delivery_id="delivery-v0",
+            delivery_id=f"delivery-{uuid.uuid5(uuid.NAMESPACE_URL, 'delivery:vn-ntq-test:review').hex}",
             event_type="review-card",
             project_id="vn-ntq-test",
             channel_id=CHANNEL_ID,
@@ -221,6 +222,97 @@ def test_legacy_review_reissues_v1_when_only_an_old_card_exists(
         ]
     finally:
         verification.close()
+
+
+def test_legacy_review_does_not_reissue_a_card_for_an_approved_project(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workflow_root = tmp_path / "workflow"
+    state_db = tmp_path / "state.sqlite"
+    artifact_root = tmp_path / "artifacts"
+    _write_project(workflow_root)
+    project_file = workflow_root / "projects" / "vn-ntq-test" / "project.json"
+    project_payload = json.loads(project_file.read_text(encoding="utf-8"))
+    project_payload.update(status="review", state_version=0)
+    project_file.write_text(json.dumps(project_payload), encoding="utf-8")
+    old_payload = tmp_path / "old-review-card.json"
+    old_payload.write_text("{}", encoding="utf-8")
+
+    connection = connect(state_db)
+    migrate(connection)
+    repository = Repository(connection)
+    candidate = repository.upsert_candidate("https://example.com/", "NTQ Solution", None)
+    repository.ensure_review_project(
+        _MutableReviewProject(
+            project_id="vn-ntq-test",
+            candidate_id=candidate.candidate_id,
+            market_id="hanoi-80km",
+            artifact_dir=str(artifact_root / "vn-ntq-test"),
+            created_at=datetime.now(UTC),
+        )
+    )
+    row = connection.execute(
+        "SELECT snapshot_json FROM projects WHERE project_id = 'vn-ntq-test'"
+    ).fetchone()
+    snapshot = json.loads(row["snapshot_json"])
+    snapshot.update(state="approved", state_version=1)
+    connection.execute(
+        "UPDATE projects SET state = 'approved', state_version = 1, snapshot_json = ? "
+        "WHERE project_id = 'vn-ntq-test'",
+        (json.dumps(snapshot),),
+    )
+    repository.enqueue_delivery(
+        DeliveryRecord(
+            delivery_id=f"delivery-{uuid.uuid5(uuid.NAMESPACE_URL, 'delivery:vn-ntq-test:review').hex}",
+            event_type="review-card",
+            project_id="vn-ntq-test",
+            channel_id=CHANNEL_ID,
+            payload_path=str(old_payload),
+            idempotency_key="review:vn-ntq-test",
+            status=DeliveryState.SENT,
+            message_id="1537000000000000001",
+            message_url=f"https://discord.com/channels/{GUILD_ID}/{CHANNEL_ID}/1537000000000000001",
+        )
+    )
+    repository.insert_component_set(
+        ComponentSet(
+            component_set_id="component-v0",
+            message_id="1537000000000000001",
+            channel_id=CHANNEL_ID,
+            project_id="vn-ntq-test",
+            card_type="review",
+            allowed_actions=["approve", "view-evidence", "refresh"],
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            state_version=1,
+            project_state=ProjectState.APPROVED,
+        )
+    )
+    connection.close()
+
+    class NoSendTransport:
+        calls = 0
+
+        def __init__(self, *, guild_id: str) -> None:
+            assert guild_id == GUILD_ID
+
+        def send(self, _record):
+            type(self).calls += 1
+            raise AssertionError("approved project must not reissue a review card")
+
+    monkeypatch.setenv("OPENCLAW_WEB_STATE_DB", str(state_db))
+    monkeypatch.setattr("openclaw_web.runtime.OpenClawAgentTransport", NoSendTransport)
+
+    result = run_legacy_review(
+        "vn-ntq-test",
+        workflow_root=workflow_root,
+        review_channel=CHANNEL_ID,
+        guild_id=GUILD_ID,
+        artifact_root=artifact_root,
+    )
+
+    assert result["status"] == "sent"
+    assert result["message_id"] == "1537000000000000001"
+    assert NoSendTransport.calls == 0
 
 
 def test_legacy_review_evidence_falls_back_to_canonical_project_files(tmp_path: Path, monkeypatch) -> None:
