@@ -9,10 +9,16 @@ from pathlib import Path
 import pytest
 
 from openclaw_web.db import Repository, connect, migrate
+from openclaw_web.delivery.components import (
+    DEFAULT_REVIEW_REJECTION_REASON,
+    ActionResult,
+    ComponentActionEnvelope,
+)
 from openclaw_web.models import ComponentSet, ProjectState
 from openclaw_web.runtime import (
     ProductionDiscoveryComposition,
     _CoordinatorActions,
+    _component_result_message,
     drain_delivery_outbox,
     run_component_action,
     run_component_callback,
@@ -61,6 +67,67 @@ class _ConfirmationSpy:
         return True
 
 
+def _seed_callback_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    project_id: str,
+    *,
+    allowed_actions: list[str],
+    project_payload: dict[str, object] | None = None,
+    component_state_version: int = 0,
+    message_id: str = "1537000000000099000",
+) -> None:
+    state_db = tmp_path / "state.sqlite"
+    workflow_root = tmp_path / "workflow"
+    workflow_root.mkdir()
+    source = Path(__file__).parents[2] / "agents/shared/workflow-coordinator.py"
+    (workflow_root / "workflow-coordinator.py").write_text(
+        source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    project_dir = workflow_root / "projects" / project_id
+    project_dir.mkdir(parents=True)
+    payload = {
+        "project_id": project_id,
+        "status": "review",
+        "state_version": component_state_version,
+        "pages": [],
+        "final_confirmations": {},
+    }
+    if project_payload is not None:
+        payload.update(project_payload)
+    (project_dir / "project.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    monkeypatch.setenv("OPENCLAW_WEB_STATE_DB", str(state_db))
+    monkeypatch.setenv("OPENCLAW_WORKFLOW_ROOT", str(workflow_root))
+    monkeypatch.setenv("OPENCLAW_WEB_DISCORD_GUILD_ID", "1446612692910739637")
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    connection = connect(state_db)
+    migrate(connection)
+    repository = Repository(connection)
+    state = ProjectState(str(payload["status"]))
+    version = int(payload["state_version"])
+    connection.execute(
+        "INSERT INTO projects (project_id, candidate_id, state, state_version, snapshot_json) "
+        "VALUES (?, NULL, ?, ?, '{}')",
+        (project_id, state.value, version),
+    )
+    repository.insert_component_set(
+        ComponentSet(
+            component_set_id=f"set-{project_id}",
+            message_id=message_id,
+            channel_id="1536658476288450630",
+            project_id=project_id,
+            card_type="review",
+            allowed_actions=allowed_actions,
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            state_version=component_state_version,
+            project_state=ProjectState.REVIEW,
+        )
+    )
+    connection.close()
+
+
 def test_coordinator_confirmation_requires_strictly_newer_state_version() -> None:
     repository = _ConfirmationSpy()
     coordinator = _CoordinatorActions(_SameVersionCoordinator(), repository)
@@ -77,6 +144,185 @@ def test_coordinator_confirmation_requires_strictly_newer_state_version() -> Non
         )
 
     assert not repository.confirmed
+
+
+def test_component_callback_smart_approve_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = "project-smart-approve"
+    _seed_callback_project(
+        tmp_path,
+        monkeypatch,
+        project_id,
+        allowed_actions=["approve", "reject", "refresh"],
+    )
+
+    result = run_component_callback(
+        json.dumps(
+            {
+                "actor_id": "859783610625556480",
+                "guild_id": "1446612692910739637",
+                "message_id": "1537000000000099000",
+                "value": f"project:{project_id}:approve",
+            }
+        )
+    )
+
+    assert result["status"] == "accepted"
+    assert result["message_vi"] == (
+        f"Đã duyệt {project_id}. Trạng thái mới: approved. "
+        "Bước tiếp theo: Website Brief."
+    )
+
+
+def test_component_callback_smart_reject_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = "project-smart-reject"
+    _seed_callback_project(
+        tmp_path,
+        monkeypatch,
+        project_id,
+        allowed_actions=["approve", "reject", "refresh"],
+        message_id="1537000000000099001",
+    )
+
+    result = run_component_callback(
+        json.dumps(
+            {
+                "actor_id": "620891893659598850",
+                "guild_id": "1446612692910739637",
+                "message_id": "1537000000000099001",
+                "value": f"project:{project_id}:reject",
+            }
+        )
+    )
+
+    assert result["status"] == "accepted"
+    assert result["message_vi"] == (
+        f"Đã từ chối {project_id}. Lý do: {DEFAULT_REVIEW_REJECTION_REASON} "
+        "Trạng thái mới: rejected."
+    )
+
+
+def test_component_callback_smart_refresh_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = "project-smart-refresh"
+    _seed_callback_project(
+        tmp_path,
+        monkeypatch,
+        project_id,
+        allowed_actions=["refresh"],
+        message_id="1537000000000099002",
+    )
+
+    result = run_component_callback(
+        json.dumps(
+            {
+                "actor_id": "620891893659598850",
+                "guild_id": "1446612692910739637",
+                "message_id": "1537000000000099002",
+                "value": f"project:{project_id}:refresh",
+            }
+        )
+    )
+
+    assert result["status"] == "read-only"
+    assert result["message_vi"] == (
+        f"Refresh {project_id}: trạng thái review, state_version 0."
+    )
+
+
+def test_component_callback_smart_stale_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = "project-smart-stale"
+    _seed_callback_project(
+        tmp_path,
+        monkeypatch,
+        project_id,
+        allowed_actions=["approve", "refresh"],
+        project_payload={"state_version": 1},
+        message_id="1537000000000099003",
+    )
+
+    result = run_component_callback(
+        json.dumps(
+            {
+                "actor_id": "620891893659598850",
+                "guild_id": "1446612692910739637",
+                "message_id": "1537000000000099003",
+                "value": f"project:{project_id}:approve",
+            }
+        )
+    )
+
+    assert result["status"] == "stale"
+    assert result["message_vi"] == (
+        f"Thẻ của {project_id} đã cũ; hãy bấm Refresh rồi thử lại."
+    )
+
+
+def test_component_callback_smart_blocked_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = "project-smart-blocked"
+    _seed_callback_project(
+        tmp_path,
+        monkeypatch,
+        project_id,
+        allowed_actions=["approve", "refresh"],
+        project_payload={
+            "pages": [{"slug": "home", "unresolved_priority": "P1"}]
+        },
+        message_id="1537000000000099004",
+    )
+
+    result = run_component_callback(
+        json.dumps(
+            {
+                "actor_id": "620891893659598850",
+                "guild_id": "1446612692910739637",
+                "message_id": "1537000000000099004",
+                "value": f"project:{project_id}:approve",
+            }
+        )
+    )
+
+    assert result["status"] == "blocked"
+    assert result["message_vi"] == (
+        f"Chưa thể duyệt {project_id}: checklist hoặc P0/P1 chưa hoàn tất. "
+        "Hãy xử lý gate rồi bấm Refresh."
+    )
+
+
+def test_component_result_message_explains_already_processed_action() -> None:
+    envelope = ComponentActionEnvelope(
+        actor_id="620891893659598850",
+        channel_id="1536658476288450630",
+        component_set_id="set-smart-duplicate",
+        message_id="1537000000000099005",
+        project_id="project-smart-duplicate",
+        state_version=0,
+        action="reject",
+    )
+    result = ActionResult(
+        "already-processed",
+        "Thao tác này đã được ghi nhận.",
+        "/lead-reject project-smart-duplicate",
+    )
+
+    message = _component_result_message(
+        envelope,
+        result,
+        {"project_id": envelope.project_id, "status": "rejected", "state_version": 1},
+    )
+
+    assert message == (
+        "Thao tác từ chối cho project-smart-duplicate đã được ghi nhận trước đó. "
+        "Trạng thái hiện tại: rejected."
+    )
 
 
 def test_page_status_does_not_create_mutation_confirmation() -> None:

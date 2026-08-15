@@ -19,6 +19,8 @@ from openclaw_web.crawl import WebsiteCrawler, normalize_url, resolve_and_valida
 from openclaw_web.db import Repository, connect, migrate
 from openclaw_web.db.repository import ReviewProjectRecord
 from openclaw_web.delivery.components import (
+    DEFAULT_REVIEW_REJECTION_REASON,
+    ActionResult,
     ComponentActionEnvelope,
     ComponentActionService,
     ComponentSetRecord,
@@ -536,6 +538,107 @@ def _component_read_only(component: ComponentSetRecord, action: str) -> str:
     raise ValueError("unsupported read-only component action")
 
 
+def _project_snapshot_text(project: dict[str, object] | None) -> tuple[str, str]:
+    if project is None:
+        return "unknown", "unknown"
+    state = project.get("status", project.get("state", "unknown"))
+    version = project.get("state_version", "unknown")
+    state_text = str(state).strip() or "unknown"
+    version_text = str(version).strip() or "unknown"
+    return state_text[:80], version_text[:40]
+
+
+def _bounded_project_value(
+    project: dict[str, object] | None,
+    keys: tuple[str, ...],
+    default: str,
+    *,
+    limit: int = 240,
+) -> str:
+    if project is not None:
+        for key in keys:
+            value = project.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:limit]
+    return default
+
+
+def _component_result_message(
+    envelope: ComponentActionEnvelope,
+    result: ActionResult,
+    project: dict[str, object] | None,
+) -> str:
+    """Render one bounded Vietnamese callback result without exposing internals."""
+
+    project_id = envelope.project_id
+    state, version = _project_snapshot_text(project)
+    action_labels = {
+        "approve": "duyệt",
+        "reject": "từ chối",
+        "view-evidence": "xem evidence",
+        "view-unresolved": "xem unresolved",
+        "refresh": "làm mới",
+    }
+    action_label = action_labels.get(envelope.action, envelope.action)
+
+    if result.status == "accepted":
+        if envelope.action == "approve":
+            return (
+                f"Đã duyệt {project_id}. Trạng thái mới: {state}. "
+                "Bước tiếp theo: Website Brief."
+            )
+        if envelope.action == "reject":
+            reason = _bounded_project_value(
+                project,
+                ("rejection_reason", "discard_reason"),
+                DEFAULT_REVIEW_REJECTION_REASON,
+            )
+            return (
+                f"Đã từ chối {project_id}. Lý do: {reason} "
+                f"Trạng thái mới: {state}."
+            )
+        return f"Đã ghi nhận thao tác {action_label} cho {project_id}. Trạng thái mới: {state}."
+
+    if result.status == "read-only":
+        if envelope.action == "refresh":
+            return f"Refresh {project_id}: trạng thái {state}, state_version {version}."
+        detail = result.message_vi
+        prefix = f"Project {project_id}: "
+        if detail.startswith(prefix):
+            detail = detail[len(prefix) :]
+        return (
+            f"Đã {action_label} của {project_id}: {detail} "
+            f"Trạng thái hiện tại: {state}, state_version {version}."
+        )
+
+    if result.status == "already-processed":
+        return (
+            f"Thao tác {action_label} cho {project_id} đã được ghi nhận trước đó. "
+            f"Trạng thái hiện tại: {state}."
+        )
+
+    if result.status in {"stale", "expired"}:
+        age = "hết hạn" if result.status == "expired" else "đã cũ"
+        return f"Thẻ của {project_id} {age}; hãy bấm Refresh rồi thử lại."
+
+    if result.status == "blocked":
+        return (
+            f"Chưa thể {action_label} {project_id}: checklist hoặc P0/P1 chưa hoàn tất. "
+            "Hãy xử lý gate rồi bấm Refresh."
+        )
+
+    if result.status == "unauthorized":
+        return f"Bạn không có quyền {action_label} {project_id}."
+
+    if result.status in {"unknown", "unavailable"}:
+        return (
+            f"Thẻ của {project_id} không khả dụng. "
+            f"Dùng lệnh dự phòng: {result.fallback_command}"
+        )
+
+    return result.message_vi or f"Không thể xử lý thao tác {action_label} cho {project_id}."
+
+
 def _workflow_root() -> Path:
     configured = os.environ.get("OPENCLAW_WORKFLOW_ROOT")
     return Path(configured).expanduser() if configured else Path.home() / ".openclaw/workflow"
@@ -608,9 +711,13 @@ def run_component_callback(text: str) -> dict[str, str]:
             read_only_action=_component_read_only,
         )
         result = service.execute_envelope(envelope)
+        try:
+            project = _workflow_project(component)
+        except RuntimeError:
+            project = None
         return {
             "status": result.status,
-            "message_vi": result.message_vi,
+            "message_vi": _component_result_message(envelope, result, project),
             "fallback_command": result.fallback_command,
         }
     finally:
