@@ -79,11 +79,18 @@ deleted or overwritten. If the canonical project has already left `review` or it
 state version is no longer `0`, the bridge returns the existing delivery instead of
 attempting to persist an invalid review component against the newer state.
 
-- [ ] Step 1: Explain backup, immutable release, plugin/config update, required gateway restart, no timer/policy/credential changes, and rollback.
-- [ ] Step 2: Upload through the existing in-memory .env/Paramiko workflow and run deploy/install-remote.sh. Require install_verified=offline.
-- [ ] Step 3: Verify config, health, Discord probe, gateway status, plugin runtime source/status, and timer state.
+- [x] Step 1: Explain backup, immutable release, plugin/config update, required gateway restart, no timer/policy/credential changes, and rollback.
+- [x] Step 2: Upload through the existing in-memory .env/Paramiko workflow and run deploy/install-remote.sh. Require install_verified=offline.
+- [x] Step 3: Verify config, health, Discord probe, gateway status, plugin runtime source/status, and timer state.
 - [ ] Step 4: With a real Minh click, verify Reject transitions the project to rejected once with the default reason. Wien must not see Reject; a real unauthorized attempt must not mutate state. Verify Approve, View evidence, and Refresh.
-- [ ] Step 5: Record release SHA, backup path, gateway PID, timer state, and rollback instructions.
+- [x] Step 5: Record release SHA, backup path, gateway PID, timer state, and rollback instructions.
+
+Deployment evidence (2026-08-15): release
+`100ed0a02b197e57cd0e7d07f6f9ebd2a3435bed1338dd8fdc749fb8986c98bb`, backup
+`~/.openclaw/backups/web-audit-reject-smart-20260815-141153`, gateway PID
+`3986718`, and timer `disabled`/`inactive`. Live actor acceptance remains pending
+because the only existing review cards predate v1 (NTQ is already `approved`, and
+the other review card has no Reject); no actor identity was simulated.
 
 ## Plan self-review
 
