@@ -1,0 +1,217 @@
+"""Bounded asynchronous adapter for the Serper Google Search API."""
+
+from __future__ import annotations
+
+import asyncio
+import math
+import time
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import Any, Self
+from urllib.parse import quote_plus
+
+import httpx
+from pydantic import SecretStr, ValidationError
+
+from openclaw_web.crawl.safety import UnsafeTarget, normalize_url
+from openclaw_web.discovery.base import (
+    AsyncRateLimiter,
+    AsyncSleeper,
+    Clock,
+    DiscoveryConfigurationError,
+    DiscoveryPayloadError,
+    DiscoveryProviderError,
+    DiscoveryRateLimitError,
+    MonotonicClock,
+    normalized_clock,
+    positive_int,
+    request_json,
+    response_byte_limit,
+    utc_now,
+    validate_limit,
+)
+from openclaw_web.discovery.scheduler import APPROVED_COHORTS
+from openclaw_web.models import CandidateSeed
+from openclaw_web.settings import MarketConfig
+
+_ENDPOINT = "https://google.serper.dev/search"
+_MAX_RESULTS = 200
+_TERMS = {
+    "manufacturer": "nhà sản xuất",
+    "professional-services": "dịch vụ chuyên nghiệp",
+    "local-service": "dịch vụ địa phương",
+    "showroom-retail": "showroom cửa hàng bán lẻ",
+    "ecommerce": "thương mại điện tử",
+    "education": "giáo dục đào tạo",
+    "healthcare": "y tế phòng khám",
+    "hospitality": "khách sạn nhà hàng",
+    "real-estate": "bất động sản",
+    "other": "doanh nghiệp",
+}
+
+
+def _key(value: str | SecretStr) -> SecretStr:
+    raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+    if not isinstance(raw, str) or not raw.strip():
+        raise DiscoveryConfigurationError("provider API credential is not configured")
+    return SecretStr(raw.strip())
+
+
+def _retry_after(value: str | None, *, now: datetime) -> float | None:
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        result = (parsed.astimezone(UTC) - now.astimezone(UTC)).total_seconds()
+    if not math.isfinite(result):
+        return None
+    return min(3600.0, max(0.0, result))
+
+
+def _raise_status(response: httpx.Response, *, clock: Clock = utc_now) -> None:
+    status = response.status_code
+    if status in (401, 403):
+        raise DiscoveryConfigurationError("provider authentication failed")
+    if status == 429:
+        raise DiscoveryRateLimitError(
+            "provider rate limit exceeded",
+            retry_after=_retry_after(
+                response.headers.get("Retry-After"), now=normalized_clock(clock)
+            ),
+        )
+    if 500 <= status:
+        raise DiscoveryProviderError("provider service failed")
+    if 400 <= status:
+        raise DiscoveryPayloadError("provider rejected discovery request")
+
+
+class SerperDiscoverySource:
+    name = "serper"
+
+    def __init__(
+        self,
+        api_key: str | SecretStr,
+        client: httpx.AsyncClient | None = None,
+        *,
+        clock: Clock = utc_now,
+        monotonic: MonotonicClock = time.monotonic,
+        sleeper: AsyncSleeper = asyncio.sleep,
+        min_interval_seconds: float = 0,
+        timeout_seconds: float = 10,
+        page_size: int = 10,
+        max_pages: int = 5,
+        max_response_bytes: int = 500_000,
+    ) -> None:
+        self._api_key = _key(api_key)
+        self._clock = clock
+        self._timeout = httpx.Timeout(timeout_seconds)
+        self._page_size = positive_int(page_size, field="page_size", cap=100)
+        self._max_pages = positive_int(max_pages, field="max_pages", cap=20)
+        self._max_response_bytes = response_byte_limit(max_response_bytes)
+        self._limiter = AsyncRateLimiter(min_interval_seconds, monotonic=monotonic, sleeper=sleeper)
+        self._client = client if client is not None else httpx.AsyncClient()
+        self._owns_client = client is None
+
+    def readiness(self) -> str:
+        return "ready"
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(ready=True)"
+
+    async def aclose(self) -> None:
+        if self._owns_client and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.aclose()
+
+    @staticmethod
+    def _query(market: MarketConfig, cohort: str) -> str:
+        if cohort not in APPROVED_COHORTS:
+            raise ValueError("cohort must be approved")
+        return f'{_TERMS[cohort]} "{market.center.name}" website'
+
+    async def _request(self, payload: Mapping[str, object]) -> Any:
+        await self._limiter.wait()
+        return await request_json(
+            self._client,
+            "POST",
+            _ENDPOINT,
+            headers={
+                "X-API-KEY": self._api_key.get_secret_value(),
+                "Content-Type": "application/json",
+            },
+            payload=payload,
+            timeout=self._timeout,
+            max_response_bytes=self._max_response_bytes,
+            status_handler=lambda response: _raise_status(response, clock=self._clock),
+        )
+
+    async def discover(
+        self, market: MarketConfig, cohort: str, limit: int
+    ) -> tuple[CandidateSeed, ...]:
+        requested = validate_limit(limit, cap=_MAX_RESULTS)
+        results: list[CandidateSeed] = []
+        seen: set[str] = set()
+        for page in range(1, self._max_pages + 1):
+            payload = await self._request(
+                {"q": self._query(market, cohort), "num": self._page_size, "page": page}
+            )
+            if not isinstance(payload, dict):
+                raise DiscoveryPayloadError("invalid provider payload")
+            organic = payload.get("organic", [])
+            if not isinstance(organic, list):
+                raise DiscoveryPayloadError("invalid provider payload")
+            valid_on_page = 0
+            for entry in organic[: self._page_size]:
+                if not isinstance(entry, dict):
+                    raise DiscoveryPayloadError("invalid provider payload")
+                title, link = entry.get("title"), entry.get("link")
+                if not isinstance(title, str) or not title.strip() or not isinstance(link, str):
+                    raise DiscoveryPayloadError("invalid provider payload")
+                try:
+                    canonical = normalize_url(link)
+                    if canonical in seen:
+                        continue
+                    seed = CandidateSeed.model_validate(
+                        {
+                            "url": canonical,
+                            "business_name": title.strip(),
+                            "source_url": (
+                                "https://www.google.com/search?q="
+                                f"{quote_plus(self._query(market, cohort))}&start={(page - 1) * self._page_size}"
+                            ),
+                            "source_type": "serper",
+                            "discovered_at": normalized_clock(self._clock),
+                            "industry_hint": cohort,
+                            "metadata": {"provider": "serper", "page": page},
+                        }
+                    )
+                except (UnsafeTarget, ValidationError, ValueError):
+                    continue
+                seen.add(canonical)
+                valid_on_page += 1
+                results.append(seed)
+                if len(results) >= requested:
+                    return tuple(results)
+            if not organic or valid_on_page == 0 and page > 1:
+                break
+        return tuple(results)
+
+
+class SerperDiscoveryProvider(SerperDiscoverySource):
+    """Compatibility wrapper for the original client-first constructor."""
+
+    def __init__(self, client: httpx.AsyncClient, api_key: str | SecretStr, **kwargs: Any) -> None:
+        super().__init__(api_key=api_key, client=client, **kwargs)

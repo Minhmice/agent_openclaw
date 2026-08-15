@@ -1,0 +1,8 @@
+market_id: hanoi-80km
+center:
+  name: "Hà Nội"
+  latitude: 21.0285
+  longitude: 105.8542
+radius_km: 80
+industries: ["*"]
+timezone: Asia/Bangkok

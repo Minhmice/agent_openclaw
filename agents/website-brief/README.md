@@ -109,3 +109,7 @@ When the output package is ready, send a compact handoff to the Checklist/PM Age
 - Suggested page order and effort estimate.
 
 The Website Brief Agent does not own scheduling or reminders.
+
+## Approval và delivery surface
+
+Review handoff dùng Discord Components v2 khi runtime hỗ trợ. Nút Approve dành cho Minh (`620891893659598850`) và Wien (`859783610625556480`); reject/request-change vẫn chỉ dành cho Minh. Nếu không verify được component, giữ project ở `review` và hiển thị `/lead-approve <project_id>` làm typed fallback. Không dùng workflow `/approve`; OpenClaw dành `/approve` cho host exec approval.

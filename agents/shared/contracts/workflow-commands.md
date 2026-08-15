@@ -1,13 +1,13 @@
 # Workflow Commands and State Contract
 
-Discord native buttons are not available in the current OpenClaw Discord capability report. Use typed commands as the primary control surface and optional reactions only after actor/message checks pass.
+Discord Components v2 are the preferred control surface for review, page, and final cards when the installed OpenClaw capability exposes components. Typed commands remain the canonical fallback and are accepted only after the same actor, project, state, and gate checks.
 
 ## Commands
 
 ```text
-/approve <project_id>
-/reject <project_id> <reason>
-/request-change <project_id> <note>
+/lead-approve <project_id>
+/lead-reject <project_id> <reason>
+/lead-request-change <project_id> <note>
 /status <project_id>
 /page-status <project_id> <page_slug>
 /page-done <project_id> <page_slug>
@@ -18,10 +18,26 @@ Discord native buttons are not available in the current OpenClaw Discord capabil
 
 ## Authorization
 
-- `/approve`: Minh or Wien (`620891893659598850`, `859783610625556480`).
-- `/reject` and `/request-change`: Minh only (`620891893659598850`).
+- `/lead-approve`: Minh or Wien (`620891893659598850`, `859783610625556480`).
+- `/lead-reject` and `/lead-request-change`: Minh only (`620891893659598850`).
 - `/page-status`, `/page-done`, and `/block`: Minh or Wien (`859783610625556480`) when acting on an assigned task.
 - `/page-approve` and `/final-confirm`: Minh or Wien when acting on an assigned page/project. The final transition to `offer-ready` requires both final confirmations unless Minh explicitly overrides it.
+
+## Components v2 button allowlists
+
+Every bot-owned card records `channel_id`, `message_id`, `project_id`, `state_version`, `expires_at`, and `component_set_id`. A callback is rejected before coordinator execution when any identity, state, expiry, or gate check fails.
+
+| Card | Button | Allowed actors | Typed fallback |
+|---|---|---|---|
+| review | Approve | Minh `620891893659598850`, Wien `859783610625556480` | `/lead-approve <project_id>` |
+| review | Reject (typed until modal support is verified) | Minh `620891893659598850` | `/lead-reject <project_id> <reason>` |
+| review | Request changes (typed until modal support is verified) | Minh `620891893659598850` | `/lead-request-change <project_id> <note>` |
+| page | Page approve | Assigned Minh/Wien | `/page-approve <project_id> <page_slug>` |
+| final | Final confirm | Minh/Wien, one confirmation per actor | `/final-confirm <project_id>` |
+
+When components are unsupported or stale, refresh the card if possible and show the exact typed fallback. Never treat a reaction or an unverified button payload as approval.
+
+`/approve` belongs to OpenClaw's built-in exec-approval command and is not a workflow alias.
 
 ## Project state
 

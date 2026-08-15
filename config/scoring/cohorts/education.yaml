@@ -1,0 +1,14 @@
+cohort_id: education
+version: cohort-v1
+business_scoring_overrides:
+  program_clarity_weight: 1.25
+  outcome_evidence_weight: 1.20
+money_scoring_overrides:
+  search_demand: 1.00
+  aov_ltv: 1.05
+  trust_dependency: 1.20
+  online_conversion_fit: 1.05
+  business_strength: 1.00
+  web_gap: 1.00
+required_evidence_categories: [programs, faculty, outcomes]
+conversion_intent_vocabulary: ["đăng ký tư vấn", "nhận học phí", "book admission call", "contact admissions"]

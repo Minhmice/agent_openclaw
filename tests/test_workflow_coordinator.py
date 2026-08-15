@@ -1,12 +1,11 @@
-import json
 import importlib.util
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-
 
 SCRIPT = Path(__file__).parents[1] / "agents" / "shared" / "workflow-coordinator.py"
 MINH = "620891893659598850"
@@ -50,6 +49,7 @@ class WorkflowCoordinatorTests(unittest.TestCase):
             env=env,
             text=True,
             capture_output=True,
+            check=False,
         )
 
     def load_project(self):
@@ -69,6 +69,18 @@ class WorkflowCoordinatorTests(unittest.TestCase):
         project = self.load_project()
         self.assertEqual(project["status"], "offer-ready")
         self.assertEqual(project["offer_channel"], "1536659097649422356")
+
+    def test_namespaced_lead_approve_alias_avoids_openclaw_core_collision(self):
+        self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)
+        before = self.load_project()["state_version"]
+
+        result = self.run_cmd("lead-approve", "acme-demo", "--actor", WIEN)
+
+        self.assertEqual(result.returncode, 0)
+        project = self.load_project()
+        self.assertEqual(project["status"], "approved")
+        self.assertEqual(project["approved_by"], WIEN)
+        self.assertEqual(project["state_version"], before + 1)
 
     def test_reject_is_idempotent_when_project_already_rejected_with_same_reason(self):
         reason = "cũng đèm đẹp rồi, không nên sửa"
@@ -118,7 +130,7 @@ class WorkflowCoordinatorTests(unittest.TestCase):
         message = coordinator.format_reminder(project, [])
         self.assertIn("NHẮC VIỆC", message)
         self.assertIn("Acme Demo", message)
-        self.assertIn("/approve acme-demo", message)
+        self.assertIn("/lead-approve acme-demo", message)
         self.assertIn("https://discord.com/channels/1446612692910739637/1536658476288450630/200", message)
         self.assertNotIn("None", message)
 

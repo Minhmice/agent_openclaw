@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily OpenClaw website discovery
+
+[Timer]
+OnCalendar=*-*-* 07:30:00 Asia/Bangkok
+Persistent=true
+RandomizedDelaySec=300
+Unit=openclaw-web-discovery.service
+
+[Install]
+WantedBy=timers.target

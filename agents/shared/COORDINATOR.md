@@ -50,8 +50,8 @@ Follow [curie-handoff.md](contracts/curie-handoff.md) and [curie-report.md](cont
 
 1. When spawning Curie, omit `cleanup` or use `cleanup: "keep"`; do not use `cleanup: "delete"` for this workflow. A cleanup/archive error must not discard a valid Curie result or stop delivery.
 2. `sessions_spawn` is non-blocking. After spawning, use `sessions_yield` so the completion event returns to `main`; do not poll sessions in a loop.
-3. When Curie completes, `main` must synthesize the result and explicitly send the compact Vietnamese dossier to `shit-that-could-cooking` (`1536658476288450630`) using the message tool. Attach up to 5 public first-party image URLs when present; otherwise include the image inventory links and explain the limitation.
-4. Send an immediate Vietnamese progress message to `discuss` and record its bot message ID. Only after the review post succeeds, send a Vietnamese acknowledgment to `discuss` (`1533645084229369996`) saying the candidate was found and is waiting in `shit-that-could-cooking`; include the direct Discord message link and `project_id`, but do not say it was approved.
+3. When Curie completes, `main` must call `openclaw-web legacy-review --project-id <project_id> --json`. This command is the only delivery path for a legacy review: it renders one compact Vietnamese message, creates the native Components v2 action row, and returns the direct Discord message URL and bot message ID. Do not send the dossier as plain text or split the review into multiple messages.
+4. Send an immediate Vietnamese progress message to `discuss` and record its bot message ID. Only after `legacy-review` returns `status=sent`, send a Vietnamese acknowledgment to `discuss` (`1533645084229369996`) saying the candidate was found and is waiting in `shit-that-could-cooking`; include the returned direct Discord message link and `project_id`, but do not say it was approved.
 5. After every Discord send, record bot-owned message IDs with `workflow-coordinator.py record-messages`. If the child completion arrives with a cleanup error, treat the completion payload as usable, log the cleanup error, and continue the handoff. If delivery fails, retry once and then report the exact failure in `discuss`.
 6. For Minh's discard intent, resolve the project and run `workflow-coordinator.py discard <project_id> --actor 620891893659598850`. This command deletes only tracked bot messages, marks the project `rejected`, and prevents future reminders. Never delete the user's original command.
 
@@ -84,7 +84,10 @@ Use the coordinator script at `/home/minhmice/.openclaw/workflow/workflow-coordi
 
 Discord Components v2 are preferred when `agentComponents.enabled` is supported. Treat the component callback and typed command as two input encodings for the same coordinator transition: both must validate actor, channel, bot-owned message, project, state version, expiry, checklist, and P0/P1 gates. If feature detection fails or a callback is stale, return the exact typed fallback command. Never accept an unverified reaction as approval.
 
-`/approve` is reserved by OpenClaw for host exec approvals. Workflow lead review uses `/lead-approve`; buttons call the deterministic plugin callback directly.
+`/approve` is reserved by OpenClaw for exec approvals. Workflow lead review must use
+`/lead-approve`; buttons call the deterministic plugin callback directly and never emit
+`/approve` into the core command parser. Actions that require a reason remain typed fallbacks
+until a verified modal-input path is available.
 
 ## Handoff messages
 
@@ -112,7 +115,7 @@ The 30-minute cron uses the deterministic command below; it does not ask a model
 
 ```bash
 OPENCLAW_WORKFLOW_ROOT=/home/minhmice/.openclaw/workflow \
-python3 /home/minhmice/.openclaw/workspace/workflow/workflow-coordinator.py \
+python3 /home/minhmice/.openclaw/workflow/workflow-coordinator.py \
   reminder-dispatch --stale-minutes 30
 ```
 

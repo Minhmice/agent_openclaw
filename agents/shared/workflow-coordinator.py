@@ -14,7 +14,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(os.environ.get("OPENCLAW_WORKFLOW_ROOT", "/home/minhmice/.openclaw/workflow"))
 PROJECTS = ROOT / "projects"
 STATE = ROOT / "state"
@@ -50,7 +49,7 @@ PAGE_STATES = {
 
 
 def now() -> str:
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
 def safe_id(value: str) -> str:
@@ -98,6 +97,10 @@ def log(event: str, project_id: str = "", detail: str = "") -> None:
 
 
 def save(project: dict[str, Any]) -> None:
+    version = project.get("state_version", 0)
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise ValueError("state_version must be a non-negative integer")
+    project["state_version"] = version + 1
     project["last_update"] = now()
     atomic_write(project_path(project["project_id"]), project)
 
@@ -177,6 +180,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     project.setdefault("status", "review")
     project.setdefault("pages", [])
     project.setdefault("final_confirmations", {})
+    project.setdefault("state_version", 0)
     project.setdefault("created_at", now())
     project.setdefault("last_update", now())
     if project["status"] not in PROJECT_STATES:
@@ -394,7 +398,7 @@ def cmd_discard(args: argparse.Namespace) -> None:
 
 
 def collect_due(stale_minutes: int) -> list[dict[str, Any]]:
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=stale_minutes)
+    cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=stale_minutes)
     due: list[dict[str, Any]] = []
     if not PROJECTS.exists():
         return due
@@ -407,7 +411,7 @@ def collect_due(stale_minutes: int) -> list[dict[str, Any]]:
         stale = True
         if last:
             try:
-                stale = dt.datetime.fromisoformat(last).replace(tzinfo=dt.timezone.utc) <= cutoff
+                stale = dt.datetime.fromisoformat(last).replace(tzinfo=dt.UTC) <= cutoff
             except ValueError:
                 stale = True
         pending = [
@@ -439,8 +443,8 @@ def format_reminder(project: dict[str, Any], pending_pages: list[dict[str, Any]]
             f"🔗 Bài review: <{review_url}>" if review_url else "🔗 Bài review: chưa có link message được track.",
             "",
             "**Bước tiếp theo**",
-            f"1. Duyệt lead: `/approve {project_id}`",
-            f"2. Yêu cầu chỉnh: `/request-change {project_id} <note>`",
+            f"1. Duyệt lead: `/lead-approve {project_id}`",
+            f"2. Yêu cầu chỉnh: `/lead-request-change {project_id} <note>`",
         ])
     else:
         if review_url:
@@ -488,10 +492,10 @@ def should_send_reminder(project: dict[str, Any], signature: str, cooldown_minut
     try:
         last_at = dt.datetime.fromisoformat(last_sent)
         if last_at.tzinfo is None:
-            last_at = last_at.replace(tzinfo=dt.timezone.utc)
+            last_at = last_at.replace(tzinfo=dt.UTC)
     except ValueError:
         return True
-    return dt.datetime.now(dt.timezone.utc) - last_at >= dt.timedelta(minutes=cooldown_minutes)
+    return dt.datetime.now(dt.UTC) - last_at >= dt.timedelta(minutes=cooldown_minutes)
 
 
 def cmd_due(args: argparse.Namespace) -> None:

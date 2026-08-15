@@ -1,0 +1,14 @@
+{
+  "id": "openclaw-web-components",
+  "name": "OpenClaw Web Components",
+  "description": "Xử lý nút duyệt Discord của workflow website bằng callback deterministic.",
+  "version": "1.0.0",
+  "activation": {
+    "onStartup": true,
+    "onChannels": ["discord"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

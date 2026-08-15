@@ -4,7 +4,7 @@ description: Minh- or Wien-approved Curie lead handoff to the Website Brief Agen
 required:
   approval:
     approved: true
-    approved_by: "620891893659598850"
+    approved_by: "620891893659598850 | 859783610625556480"
     approved_at: "ISO-8601"
   website_url: "https://example.com"
   lead:
@@ -30,7 +30,8 @@ optional:
   confidence_gaps:
     - "string"
 rules:
-  - Curie must not mark approval true without Minh's actor ID.
+  - Curie must not mark approval true without Minh or Wien's actor ID.
+  - Valid review approvers are "620891893659598850" (Minh) and "859783610625556480" (Wien).
   - Every factual claim must have an evidence URL or an explicit inferred/estimated label.
   - The Website Brief Agent independently verifies public claims.
   - No password, token, private key, cookie, or session data is allowed.

@@ -1,0 +1,63 @@
+rubric_version: base-v1
+maximum_score: 100.0
+qualification:
+  threshold: 75.0
+  provisional: true
+allowed_inputs:
+  - lighthouse.lcp_ms
+  - lighthouse.performance_score
+  - audit.broken_links
+  - audit.has_conversion_cta
+  - crawl.has_contact_page
+base_rules:
+  - rule_id: slow-lcp
+    input: lighthouse.lcp_ms
+    operator: gt
+    threshold: 4000.0
+    points: 20.0
+    evidence_ids: [LIGHTHOUSE-LCP-SLOW]
+  - rule_id: poor-performance
+    input: lighthouse.performance_score
+    operator: lt
+    threshold: 50.0
+    points: 20.0
+    evidence_ids: [LIGHTHOUSE-PERFORMANCE-POOR]
+  - rule_id: broken-links
+    input: audit.broken_links
+    operator: gt
+    threshold: 0
+    points: 15.0
+    evidence_ids: [LINK-BROKEN]
+  - rule_id: missing-conversion-cta
+    input: audit.has_conversion_cta
+    operator: eq
+    threshold: false
+    points: 25.0
+    evidence_ids: [CTA-MISSING]
+  - rule_id: missing-contact-page
+    input: crawl.has_contact_page
+    operator: eq
+    threshold: false
+    points: 20.0
+    evidence_ids: [CRAWL-CONTACT-MISSING]
+cohort_overrides:
+  manufacturer:
+    rules: []
+  professional-services:
+    rules: []
+  local-service:
+    rules: []
+  showroom-retail:
+    rules: []
+  ecommerce:
+    rules: []
+  education:
+    rules: []
+  healthcare:
+    rules: []
+  hospitality:
+    rules: []
+  real-estate:
+    rules: []
+  other:
+    rules: []

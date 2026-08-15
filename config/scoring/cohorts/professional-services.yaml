@@ -1,0 +1,14 @@
+cohort_id: professional-services
+version: cohort-v1
+business_scoring_overrides:
+  authority_weight: 1.25
+  case_study_weight: 1.20
+money_scoring_overrides:
+  search_demand: 1.00
+  aov_ltv: 1.15
+  trust_dependency: 1.25
+  online_conversion_fit: 1.10
+  business_strength: 1.10
+  web_gap: 1.00
+required_evidence_categories: [credentials, services, case-studies]
+conversion_intent_vocabulary: ["đặt lịch tư vấn", "chuyên gia", "book a consultation", "contact an advisor"]

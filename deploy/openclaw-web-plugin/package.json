@@ -1,0 +1,18 @@
+{
+  "name": "@minhmice/openclaw-web-components",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1-2"
+  },
+  "openclaw": {
+    "extensions": ["./index.js"],
+    "compat": {
+      "minGatewayVersion": "2026.7.1-2"
+    }
+  }
+}

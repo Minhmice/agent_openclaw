@@ -4,6 +4,8 @@ Operational runbook for the OpenClaw instance hosted at `100.121.246.38`.
 
 This repository is intentionally documentation-first. It does not contain the remote OpenClaw application source. A new agent should start with this file and [AGENTS.md](AGENTS.md), load access credentials from its environment or secret provider, inspect the live host, and then follow the approval-gated change workflow below.
 
+Local website discovery/audit implementation details, Components v2 behavior, typed fallbacks, cron, retention, and rollback are documented in [docs/runbooks/web-audit-discovery.md](docs/runbooks/web-audit-discovery.md).
+
 ## Quick start for a new agent
 
 ### 1. Load non-secret connection metadata
@@ -72,7 +74,7 @@ Read-only investigation is allowed while discussing. The following always requir
 
 ### Discord owner and exec-approval parity
 
-If Minh and Wien must have the same OpenClaw owner and Discord exec-approval rights, configure both Discord IDs in both authorization layers. The workflow coordinator's `/approve` permission is separate and does not grant OpenClaw host-exec approval.
+If Minh and Wien must have the same OpenClaw owner and Discord exec-approval rights, configure both Discord IDs in both authorization layers. Project approval uses verified Discord buttons or `/lead-approve`; `/approve` is reserved for OpenClaw host-exec approval.
 
 The intended non-secret shape is:
 
