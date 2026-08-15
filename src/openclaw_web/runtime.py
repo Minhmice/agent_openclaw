@@ -571,7 +571,8 @@ def run_component_callback(text: str) -> dict[str, str]:
     OpenClaw authorizes the Discord component before invoking the plugin bridge;
     this durable layer remains the authority for actor, message, state, and
     action checks. Keep that distinction and the plugin's bounded rejection
-    diagnostics aligned across the release pair.
+    diagnostics (including error-level reason codes) aligned across the
+    release pair.
     """
 
     payload = _strict_callback_json(text)

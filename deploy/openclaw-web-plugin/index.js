@@ -435,7 +435,7 @@ export function createOpenClawWebPlugin({
         handler: async (ctx) => {
           const checked = trustedEnvelopeCheck(ctx, guildId);
           if (checked.envelope === null) {
-            api.logger?.warn?.(
+            api.logger?.error?.(
               `openclaw-web invalid component envelope: ${checked.reason}`,
             );
             await respondEphemeral(ctx, "Yêu cầu từ nút bấm không hợp lệ.");

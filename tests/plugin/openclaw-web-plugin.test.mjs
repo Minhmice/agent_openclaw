@@ -46,11 +46,14 @@ function makeApi({ sendResult } = {}) {
   let cliRegistration;
   const agentCalls = [];
   const outboundCalls = [];
+  const errors = [];
   const warnings = [];
   const config = { marker: "runtime-config" };
   const api = {
     logger: {
-      error() {},
+      error(message) {
+        errors.push(message);
+      },
       warn(message) {
         warnings.push(message);
       },
@@ -99,6 +102,7 @@ function makeApi({ sendResult } = {}) {
     agentCalls,
     cliRegistration: () => cliRegistration,
     config,
+    errors,
     outboundCalls,
     warnings,
     registration: () => registration,
@@ -301,7 +305,7 @@ test("logs a redacted envelope rejection reason", async () => {
 
   await observed.registration().handler(context);
 
-  assert.deepEqual(observed.warnings, [
+  assert.deepEqual(observed.errors, [
     "openclaw-web invalid component envelope: invalid_message",
   ]);
   assert.deepEqual(replies, [
