@@ -161,8 +161,8 @@ import sys
 from pathlib import Path
 
 import yaml
+from openclaw_web.health import _playwright_ready
 from openclaw_web.runtime import run_daily_discovery  # noqa: F401
-from playwright.sync_api import sync_playwright
 
 root = Path(sys.argv[1])
 for path in [
@@ -177,9 +177,8 @@ for path in sorted((root / "schemas/generated").glob("*.json")):
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or not value:
         raise SystemExit(f"invalid required schema: {path.relative_to(root)}")
-with sync_playwright() as playwright:
-    if not Path(playwright.chromium.executable_path).is_file():
-        raise SystemExit("Playwright Chromium is not installed")
+if not _playwright_ready():
+    raise SystemExit("Playwright Chromium is not installed")
 PY
   command -v lighthouse >/dev/null || { echo "lighthouse is required" >&2; return 2; }
 }

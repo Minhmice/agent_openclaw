@@ -84,6 +84,7 @@ def health(json_output: bool = typer.Option(False, "--json", help="Xuat JSON red
             "manual_audit_ready": report.manual_audit_ready,
             "discovery_ready": report.discovery_ready,
             "checks": report.checks,
+            "discovery_blockers": report.discovery_blockers,
         }, json_output=True)
         return
     _run_service("health")

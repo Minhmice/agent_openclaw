@@ -54,6 +54,7 @@ def test_health_json_uses_absolute_runtime_configuration() -> None:
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["checks"]["artifact_root_absolute"]
+    assert isinstance(payload["discovery_blockers"], list)
 
 
 def test_cron_dry_run_is_offline_and_does_not_require_registry() -> None:
