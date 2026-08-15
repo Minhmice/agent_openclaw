@@ -46,11 +46,14 @@ function makeApi({ sendResult } = {}) {
   let cliRegistration;
   const agentCalls = [];
   const outboundCalls = [];
+  const warnings = [];
   const config = { marker: "runtime-config" };
   const api = {
     logger: {
       error() {},
-      warn() {},
+      warn(message) {
+        warnings.push(message);
+      },
     },
     runtime: {
       agent(...args) {
@@ -97,6 +100,7 @@ function makeApi({ sendResult } = {}) {
     cliRegistration: () => cliRegistration,
     config,
     outboundCalls,
+    warnings,
     registration: () => registration,
   };
 }
@@ -286,6 +290,23 @@ test("accepts a host-authorized component when command authorization is false", 
   ]);
   assert.deepEqual(replies, [{ text: "Đã ghi nhận thao tác.", ephemeral: true }]);
   assert.deepEqual(result, { handled: true });
+});
+
+test("logs a redacted envelope rejection reason", async () => {
+  const observed = makeApi();
+  const replies = [];
+  createTestPlugin().register(observed.api);
+  const context = callbackContext("project:project-1:approve", replies);
+  context.interaction.messageId = "not-a-message";
+
+  await observed.registration().handler(context);
+
+  assert.deepEqual(observed.warnings, [
+    "openclaw-web invalid component envelope: invalid_message",
+  ]);
+  assert.deepEqual(replies, [
+    { text: "Yêu cầu từ nút bấm không hợp lệ.", ephemeral: true },
+  ]);
 });
 
 for (const payload of [

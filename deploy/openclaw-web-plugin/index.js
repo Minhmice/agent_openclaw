@@ -75,7 +75,7 @@ async function respondEphemeral(ctx, text) {
   }
 }
 
-function trustedEnvelope(ctx, configuredGuildId) {
+function trustedEnvelopeCheck(ctx, configuredGuildId) {
   const actorId = ctx?.senderId;
   const guildId = ctx?.guildId ?? ctx?.rawGuildId;
   const messageId = ctx?.interaction?.messageId;
@@ -86,26 +86,39 @@ function trustedEnvelope(ctx, configuredGuildId) {
   // command authorization, which is a separate signal and may be false for a
   // valid component actor. The durable Python callback validates the actor,
   // message, component state, and action again before any mutation.
+  if (typeof actorId !== "string" || !DISCORD_SNOWFLAKE.test(actorId)) {
+    return { envelope: null, reason: "invalid_actor" };
+  }
   if (
-    typeof actorId !== "string" ||
-    !DISCORD_SNOWFLAKE.test(actorId) ||
     typeof configuredGuildId !== "string" ||
-    !DISCORD_SNOWFLAKE.test(configuredGuildId) ||
-    guildId !== configuredGuildId ||
-    typeof messageId !== "string" ||
-    !DISCORD_SNOWFLAKE.test(messageId) ||
-    namespace !== NAMESPACE ||
+    !DISCORD_SNOWFLAKE.test(configuredGuildId)
+  ) {
+    return { envelope: null, reason: "invalid_configured_guild" };
+  }
+  if (guildId !== configuredGuildId) {
+    return { envelope: null, reason: "guild_mismatch" };
+  }
+  if (typeof messageId !== "string" || !DISCORD_SNOWFLAKE.test(messageId)) {
+    return { envelope: null, reason: "invalid_message" };
+  }
+  if (namespace !== NAMESPACE) {
+    return { envelope: null, reason: "namespace_mismatch" };
+  }
+  if (
     typeof value !== "string" ||
     value.length > 512 ||
     (!PROJECT_CALLBACK.test(value) && !PAGE_CALLBACK.test(value))
   ) {
-    return null;
+    return { envelope: null, reason: "invalid_payload" };
   }
   return {
-    actor_id: actorId,
-    guild_id: guildId,
-    message_id: messageId,
-    value,
+    envelope: {
+      actor_id: actorId,
+      guild_id: guildId,
+      message_id: messageId,
+      value,
+    },
+    reason: null,
   };
 }
 
@@ -420,13 +433,16 @@ export function createOpenClawWebPlugin({
         channel: "discord",
         namespace: NAMESPACE,
         handler: async (ctx) => {
-          const envelope = trustedEnvelope(ctx, guildId);
-          if (envelope === null) {
+          const checked = trustedEnvelopeCheck(ctx, guildId);
+          if (checked.envelope === null) {
+            api.logger?.warn?.(
+              `openclaw-web invalid component envelope: ${checked.reason}`,
+            );
             await respondEphemeral(ctx, "Yêu cầu từ nút bấm không hợp lệ.");
             return { handled: true };
           }
           try {
-            const result = await runCallback(envelope);
+            const result = await runCallback(checked.envelope);
             await respondEphemeral(ctx, result.message_vi);
           } catch {
             api.logger?.error?.("openclaw-web component callback failed");
