@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from openclaw_web.delivery.components import (
+    DEFAULT_REVIEW_REJECTION_REASON,
     MINH_ID,
     WIEN_ID,
     ComponentActionService,
@@ -295,6 +296,35 @@ def test_unauthorized_actor_never_reaches_coordinator() -> None:
     )
     assert result.status == "unauthorized"
     assert result.fallback_command == "/lead-approve project-1"
+    assert coordinator.calls == []
+
+
+def test_one_click_reject_uses_canonical_default_reason() -> None:
+    coordinator = Coordinator()
+    result = ComponentActionService(Components(component()), coordinator).execute(
+        channel_id="channel-1",
+        message_id="message-1",
+        actor_id=MINH_ID,
+        action="reject",
+    )
+
+    assert result.status == "accepted"
+    assert result.fallback_command == (
+        f"/lead-reject project-1 {DEFAULT_REVIEW_REJECTION_REASON}"
+    )
+    assert coordinator.calls[0]["reason"] == DEFAULT_REVIEW_REJECTION_REASON
+
+
+def test_review_reject_is_not_authorized_for_wien() -> None:
+    coordinator = Coordinator()
+    result = ComponentActionService(Components(component()), coordinator).execute(
+        channel_id="channel-1",
+        message_id="message-1",
+        actor_id=WIEN_ID,
+        action="reject",
+    )
+
+    assert result.status == "unauthorized"
     assert coordinator.calls == []
 
 

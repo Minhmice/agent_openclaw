@@ -348,12 +348,17 @@ class ComponentActionService:
         reason: str | None = None,
         page_slug: str | None = None,
     ) -> ActionResult:
+        effective_reason = (
+            DEFAULT_REVIEW_REJECTION_REASON
+            if action == "reject" and (reason is None or not reason.strip())
+            else reason
+        )
         component = self.store.get_component_set(channel_id, message_id)
         fallback = typed_fallback(
             component.project_id if component else "<project_id>",
             action,
             page_slug=page_slug,
-            reason=reason,
+            reason=effective_reason,
         )
         if component is None:
             return ActionResult(
@@ -413,7 +418,7 @@ class ComponentActionService:
                 project_id=component.project_id,
                 action=action,
                 actor_id=actor_id,
-                reason=reason,
+                reason=effective_reason,
                 page_slug=page_slug,
                 component_set_id=component.component_set_id,
                 state_version=component.state_version,
