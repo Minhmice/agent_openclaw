@@ -20,11 +20,11 @@ from openclaw_web.db import Repository, connect, migrate
 from openclaw_web.db.repository import ReviewProjectRecord
 from openclaw_web.delivery.components import (
     DEFAULT_REVIEW_REJECTION_REASON,
+    REVIEW_CARD_VERSION,
     ActionResult,
     ComponentActionEnvelope,
     ComponentActionService,
     ComponentSetRecord,
-    REVIEW_CARD_VERSION,
     build_review_card,
     component_record,
     parse_component_action_json,
@@ -604,8 +604,7 @@ def _component_result_message(
             return f"Refresh {project_id}: trạng thái {state}, state_version {version}."
         detail = result.message_vi
         prefix = f"Project {project_id}: "
-        if detail.startswith(prefix):
-            detail = detail[len(prefix) :]
+        detail = detail.removeprefix(prefix)
         return (
             f"Đã {action_label} của {project_id}: {detail} "
             f"Trạng thái hiện tại: {state}, state_version {version}."

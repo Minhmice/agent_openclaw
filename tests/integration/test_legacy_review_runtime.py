@@ -8,7 +8,7 @@ from openclaw_web.db import Repository, connect, migrate
 from openclaw_web.delivery.components import ComponentSetRecord
 from openclaw_web.delivery.openclaw_transport import SentMessage
 from openclaw_web.models import ComponentSet, DeliveryRecord, DeliveryState, ProjectState
-from openclaw_web.runtime import _MutableReviewProject, _component_read_only, run_legacy_review
+from openclaw_web.runtime import _component_read_only, _MutableReviewProject, run_legacy_review
 
 GUILD_ID = "1446612692910739637"
 CHANNEL_ID = "1536658476288450630"

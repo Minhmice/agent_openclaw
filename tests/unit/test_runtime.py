@@ -17,8 +17,8 @@ from openclaw_web.delivery.components import (
 from openclaw_web.models import ComponentSet, ProjectState
 from openclaw_web.runtime import (
     ProductionDiscoveryComposition,
-    _CoordinatorActions,
     _component_result_message,
+    _CoordinatorActions,
     drain_delivery_outbox,
     run_component_action,
     run_component_callback,
