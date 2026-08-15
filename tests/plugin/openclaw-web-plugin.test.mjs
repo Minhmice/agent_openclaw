@@ -257,6 +257,37 @@ test("relies on host auto-ack and follows up ephemerally", async () => {
   assert.deepEqual(observed.agentCalls, []);
 });
 
+test("accepts a host-authorized component when command authorization is false", async () => {
+  const observed = makeApi();
+  const callbacks = [];
+  const replies = [];
+  createTestPlugin({
+    async runCallback(envelope) {
+      callbacks.push(envelope);
+      return { message_vi: "Đã ghi nhận thao tác." };
+    },
+  }).register(observed.api);
+
+  const context = callbackContext("project:project-1:approve", replies);
+  // OpenClaw performs the component allowedUsers check before invoking this
+  // plugin. Its command authorization result is a separate signal and may be
+  // false for an otherwise authorized component actor.
+  context.auth.isAuthorizedSender = false;
+
+  const result = await observed.registration().handler(context);
+
+  assert.deepEqual(callbacks, [
+    {
+      actor_id: MINH_ID,
+      guild_id: GUILD_ID,
+      message_id: MESSAGE_ID,
+      value: "project:project-1:approve",
+    },
+  ]);
+  assert.deepEqual(replies, [{ text: "Đã ghi nhận thao tác.", ephemeral: true }]);
+  assert.deepEqual(result, { handled: true });
+});
+
 for (const payload of [
   "",
   "approve",
@@ -293,9 +324,6 @@ for (const payload of [
 
 test("rejects an untrusted or incomplete Discord context without execution", async () => {
   const cases = [
-    (ctx) => {
-      ctx.auth.isAuthorizedSender = false;
-    },
     (ctx) => {
       delete ctx.senderId;
     },

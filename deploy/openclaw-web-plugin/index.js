@@ -81,8 +81,12 @@ function trustedEnvelope(ctx, configuredGuildId) {
   const messageId = ctx?.interaction?.messageId;
   const namespace = ctx?.interaction?.namespace;
   const value = ctx?.interaction?.payload;
+  // OpenClaw has already enforced the component's allowedUsers and guild /
+  // channel policy before invoking this handler. Its auth flag represents
+  // command authorization, which is a separate signal and may be false for a
+  // valid component actor. The durable Python callback validates the actor,
+  // message, component state, and action again before any mutation.
   if (
-    ctx?.auth?.isAuthorizedSender !== true ||
     typeof actorId !== "string" ||
     !DISCORD_SNOWFLAKE.test(actorId) ||
     typeof configuredGuildId !== "string" ||
