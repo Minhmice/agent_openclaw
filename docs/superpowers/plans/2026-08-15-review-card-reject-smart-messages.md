@@ -75,7 +75,9 @@ Remote mutation needs separate approval at execution time. The timer remains dis
 Execution note: the current legacy delivery used a v0 component/delivery identity. The
 implementation emits a v1 identity and idempotency key so an existing v0 card is
 preserved while one replacement card is sent with Reject; the old delivery is not
-deleted or overwritten.
+deleted or overwritten. If the canonical project has already left `review` or its
+state version is no longer `0`, the bridge returns the existing delivery instead of
+attempting to persist an invalid review component against the newer state.
 
 - [ ] Step 1: Explain backup, immutable release, plugin/config update, required gateway restart, no timer/policy/credential changes, and rollback.
 - [ ] Step 2: Upload through the existing in-memory .env/Paramiko workflow and run deploy/install-remote.sh. Require install_verified=offline.
