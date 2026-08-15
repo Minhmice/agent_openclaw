@@ -83,12 +83,14 @@ def test_legacy_review_is_idempotent_and_persists_component_identity(
         workflow_root=workflow_root,
         review_channel=CHANNEL_ID,
         guild_id=GUILD_ID,
+        artifact_root=tmp_path / "artifacts",
     )
     second = run_legacy_review(
         "vn-ntq-test",
         workflow_root=workflow_root,
         review_channel=CHANNEL_ID,
         guild_id=GUILD_ID,
+        artifact_root=tmp_path / "artifacts",
     )
 
     assert first["status"] == "sent"
@@ -103,7 +105,23 @@ def test_legacy_review_is_idempotent_and_persists_component_identity(
         assert repository.connection.execute("SELECT COUNT(*) FROM component_sets").fetchone()[0] == 1
         component = repository.get_component_set(CHANNEL_ID, MESSAGE_ID)
         assert component is not None
-        assert component.allowed_actions == ["approve", "view-evidence", "refresh"]
+        assert component.allowed_actions == ["approve", "reject", "view-evidence", "refresh"]
+        payload = json.loads(
+            (tmp_path / "artifacts" / "vn-ntq-test" / "review-card.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert payload["component_set"]["allowed_actions"] == [
+            "approve",
+            "reject",
+            "view-evidence",
+            "refresh",
+        ]
+        rendered = {
+            button["label"]: button
+            for button in payload["components"]["blocks"][0]["buttons"]
+        }
+        assert rendered["Reject"]["allowedUsers"] == ["620891893659598850"]
     finally:
         connection.close()
 

@@ -22,6 +22,7 @@ from openclaw_web.delivery.components import (
     ComponentActionEnvelope,
     ComponentActionService,
     ComponentSetRecord,
+    REVIEW_CARD_VERSION,
     build_review_card,
     component_record,
     parse_component_action_json,
@@ -127,7 +128,7 @@ def run_legacy_review(
         raise LegacyReviewError("legacy project website is missing")
     message = render_legacy_review_message(project, dossier)
     now = datetime.now(UTC)
-    component_set_id = f"component-{uuid.uuid5(uuid.NAMESPACE_URL, f'component:{project_id}:review:v0').hex}"
+    component_set_id = f"component-{uuid.uuid5(uuid.NAMESPACE_URL, f'component:{project_id}:review:{REVIEW_CARD_VERSION}').hex}"
     expires_at = now + timedelta(hours=24)
     artifact_dir = _legacy_artifact_root(artifact_root) / project_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -137,7 +138,7 @@ def run_legacy_review(
             "component_set_id": component_set_id,
             "project_id": project_id,
             "card_type": "review",
-            "allowed_actions": ["approve", "view-evidence", "refresh"],
+            "allowed_actions": [button.action for button in build_review_card(project_id).buttons],
             "expires_at": expires_at.isoformat(),
             "state_version": 0,
             "project_state": ProjectState.REVIEW.value,
@@ -164,14 +165,15 @@ def run_legacy_review(
                 created_at=created_at,
             )
         )
-        delivery_id = f"delivery-{uuid.uuid5(uuid.NAMESPACE_URL, f'delivery:{project_id}:review').hex}"
+        delivery_key = f"review:{project_id}:{REVIEW_CARD_VERSION}"
+        delivery_id = f"delivery-{uuid.uuid5(uuid.NAMESPACE_URL, f'delivery:{project_id}:review:{REVIEW_CARD_VERSION}').hex}"
         delivery = DeliveryRecord(
             delivery_id=delivery_id,
             event_type="review-card",
             project_id=project_id,
             channel_id=channel,
             payload_path=str(payload_path),
-            idempotency_key=f"review:{project_id}",
+            idempotency_key=delivery_key,
             status=DeliveryState.PENDING,
         )
         existing_status = repository.get_delivery_status(delivery.idempotency_key)

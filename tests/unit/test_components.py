@@ -65,7 +65,7 @@ def test_review_card_applies_per_button_allowlists() -> None:
     card = build_review_card("project-1")
     buttons = {button.label: button for button in card.buttons}
     assert buttons["Approve"].allowed_users == (MINH_ID, WIEN_ID)
-    assert "Reject" not in buttons
+    assert buttons["Reject"].allowed_users == (MINH_ID,)
     assert "Request changes" not in buttons
     payload = card.payload
     assert set(payload) == {"reusable", "blocks"}
@@ -78,6 +78,24 @@ def test_review_card_applies_per_button_allowlists() -> None:
         "callbackData": "openclaw-web:project:project-1:approve",
         "callbackDataKind": "callback",
         "allowedUsers": [MINH_ID, WIEN_ID],
+    }
+
+
+def test_review_card_includes_min_only_reject_button() -> None:
+    card = build_review_card("project-1")
+    buttons = {button.label: button for button in card.buttons}
+
+    reject = buttons["Reject"]
+    assert reject.action == "reject"
+    assert reject.allowed_users == (MINH_ID,)
+
+    rendered = {button["label"]: button for button in card.payload["blocks"][0]["buttons"]}
+    assert rendered["Reject"] == {
+        "label": "Reject",
+        "style": "danger",
+        "callbackData": "openclaw-web:project:project-1:reject",
+        "callbackDataKind": "callback",
+        "allowedUsers": [MINH_ID],
     }
 
 

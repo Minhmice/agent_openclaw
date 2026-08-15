@@ -12,6 +12,8 @@ from openclaw_web.models import ComponentSet
 
 MINH_ID = "620891893659598850"
 WIEN_ID = "859783610625556480"
+REVIEW_CARD_VERSION = "v1"
+DEFAULT_REVIEW_REJECTION_REASON = "Không phù hợp với tiêu chí review hiện tại."
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +79,7 @@ def build_review_card(project_id: str) -> Card:
     """Build the review card; authorization is duplicated server-side on callback."""
     return Card(project_id, "review", (
         Button("Approve", "approve", (MINH_ID, WIEN_ID)),
+        Button("Reject", "reject", (MINH_ID,)),
         Button("View evidence", "view-evidence", (MINH_ID, WIEN_ID)),
         Button("Refresh", "refresh", (MINH_ID, WIEN_ID)),
     ))
