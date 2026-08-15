@@ -566,7 +566,12 @@ def run_component_action(text: str) -> dict[str, str]:
 
 
 def run_component_callback(text: str) -> dict[str, str]:
-    """Resolve a trusted Discord callback by durable message identity, then execute it."""
+    """Resolve a trusted Discord callback by durable message identity, then execute it.
+
+    OpenClaw authorizes the Discord component before invoking the plugin bridge;
+    this durable layer remains the authority for actor, message, state, and
+    action checks. Keep that distinction aligned with the companion plugin.
+    """
 
     payload = _strict_callback_json(text)
     connection = connect(_state_db())
