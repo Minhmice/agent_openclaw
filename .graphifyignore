@@ -10,3 +10,7 @@ _deploy-staging-openclaw/
 build/
 dist/
 graphify-out/
+tests/
+dashboard/
+schemas/generated/
+docs/archive/
