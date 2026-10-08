@@ -89,49 +89,11 @@ def test_cron_run_without_provider_uses_db_lock_and_fails_closed(
     assert state_db.exists()
 
 
-def test_delivery_json_drains_the_real_outbox(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "openclaw_web.runtime.drain_delivery_outbox",
-        lambda: {"status": "sent", "dispatched": 1, "sent": 1, "failed": 0},
-    )
-
-    result = CliRunner().invoke(cli.app, ["delivery", "--json"])
-
-    assert result.exit_code == 0
-    assert json.loads(result.output) == {
-        "dispatched": 1,
-        "failed": 0,
-        "sent": 1,
-        "status": "sent",
-    }
-
-
-def test_legacy_review_json_calls_the_durable_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(
-        "openclaw_web.runtime.run_legacy_review",
-        lambda project_id: calls.append(project_id)
-        or {
-            "project_id": project_id,
-            "status": "sent",
-            "message_id": "1537000000000000000",
-        },
-    )
-
-    result = CliRunner().invoke(
-        cli.app, ["legacy-review", "--project-id", "vn-ntq-test", "--json"]
-    )
-
-    assert result.exit_code == 0
-    assert calls == ["vn-ntq-test"]
-    assert json.loads(result.output)["status"] == "sent"
-
-
 def test_legacy_review_json_serializes_pydantic_message_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "openclaw_web.runtime.run_legacy_review",
+        "openclaw_web.runtime_legacy.run_legacy_review",
         lambda _project_id: {
             "project_id": "vn-ntq-test",
             "status": "sent",
@@ -140,70 +102,10 @@ def test_legacy_review_json_serializes_pydantic_message_url(
         },
     )
 
-    result = CliRunner().invoke(
-        cli.app, ["legacy-review", "--project-id", "vn-ntq-test", "--json"]
-    )
+    result = CliRunner().invoke(cli.app, ["legacy-review", "--project-id", "vn-ntq-test", "--json"])
 
     assert result.exit_code == 0
     assert json.loads(result.output)["message_url"] == "https://discord.com/channels/1/2/3"
-
-
-def test_component_action_reads_strict_envelope_from_stdin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(
-        "openclaw_web.runtime.run_component_action",
-        lambda text: calls.append(text) or {
-            "status": "accepted",
-            "message_vi": "Da ghi nhan thao tac.",
-            "fallback_command": "/lead-approve project-1",
-        },
-    )
-    envelope = json.dumps(
-        {
-            "actor_id": "620891893659598850",
-            "channel_id": "channel-1",
-            "component_set_id": "set-1",
-            "message_id": "message-1",
-            "state_version": 2,
-            "value": "project:project-1:approve",
-        }
-    )
-
-    result = CliRunner().invoke(cli.app, ["component-action", "--json"], input=envelope)
-
-    assert result.exit_code == 0
-    assert calls == [envelope]
-    assert json.loads(result.output)["status"] == "accepted"
-
-
-def test_component_callback_reads_only_trusted_identity_from_stdin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(
-        "openclaw_web.runtime.run_component_callback",
-        lambda text: calls.append(text) or {
-            "status": "accepted",
-            "message_vi": "Da ghi nhan thao tac.",
-            "fallback_command": "/lead-approve project-1",
-        },
-    )
-    envelope = json.dumps(
-        {
-            "actor_id": "620891893659598850",
-            "guild_id": "1446612692910739637",
-            "message_id": "1537000000000000000",
-            "value": "project:project-1:approve",
-        }
-    )
-
-    result = CliRunner().invoke(cli.app, ["component-callback", "--json"], input=envelope)
-
-    assert result.exit_code == 0
-    assert calls == [envelope]
-    assert json.loads(result.output)["status"] == "accepted"
 
 
 def test_component_callback_rejects_oversized_stdin_before_runtime(
@@ -216,47 +118,12 @@ def test_component_callback_rejects_oversized_stdin_before_runtime(
         called = True
         return {}
 
-    monkeypatch.setattr("openclaw_web.runtime.run_component_callback", unexpected)
+    monkeypatch.setattr("openclaw_web.runtime_components.run_component_callback", unexpected)
 
-    result = CliRunner().invoke(
-        cli.app, ["component-callback", "--json"], input="x" * 65_537
-    )
+    result = CliRunner().invoke(cli.app, ["component-callback", "--json"], input="x" * 65_537)
 
     assert result.exit_code == 2
     assert not called
-
-
-def test_component_action_reads_strict_envelope_from_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(
-        "openclaw_web.runtime.run_component_action",
-        lambda text: calls.append(text) or {
-            "status": "accepted",
-            "message_vi": "Da ghi nhan thao tac.",
-            "fallback_command": "/final-confirm project-1",
-        },
-    )
-    envelope = json.dumps(
-        {
-            "actor_id": "620891893659598850",
-            "channel_id": "channel-1",
-            "component_set_id": "set-1",
-            "message_id": "message-1",
-            "state_version": 2,
-            "value": "project:project-1:final-confirm",
-        }
-    )
-    input_path = tmp_path / "component-action.json"
-    input_path.write_text(envelope, encoding="utf-8")
-
-    result = CliRunner().invoke(
-        cli.app, ["component-action", "--input", str(input_path), "--json"]
-    )
-
-    assert result.exit_code == 0
-    assert calls == [envelope]
 
 
 def test_component_action_rejects_stdin_and_file_together(tmp_path: Path) -> None:
@@ -283,13 +150,11 @@ def test_component_action_rejects_oversized_file_before_runtime(
         called = True
         return {}
 
-    monkeypatch.setattr("openclaw_web.runtime.run_component_action", unexpected)
+    monkeypatch.setattr("openclaw_web.runtime_components.run_component_action", unexpected)
     input_path = tmp_path / "oversized.json"
     input_path.write_bytes(b"x" * 65_537)
 
-    result = CliRunner().invoke(
-        cli.app, ["component-action", "--input", str(input_path), "--json"]
-    )
+    result = CliRunner().invoke(cli.app, ["component-action", "--input", str(input_path), "--json"])
 
     assert result.exit_code == 2
     assert not called

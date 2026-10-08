@@ -28,14 +28,10 @@ class SqliteRunLocks:
         finally:
             connection.close()
 
-    def acquire_run_lock(
-        self, key: str, owner: str, now: datetime, lease_seconds: int
-    ) -> bool:
+    def acquire_run_lock(self, key: str, owner: str, now: datetime, lease_seconds: int) -> bool:
         return bool(self._apply("acquire_run_lock", key, owner, now, lease_seconds))
 
-    def renew_run_lock(
-        self, key: str, owner: str, now: datetime, lease_seconds: int
-    ) -> bool:
+    def renew_run_lock(self, key: str, owner: str, now: datetime, lease_seconds: int) -> bool:
         return bool(self._apply("renew_run_lock", key, owner, now, lease_seconds))
 
     def release_run_lock(self, key: str, owner: str) -> None:
@@ -46,9 +42,7 @@ class RepositoryComponents:
     def __init__(self, repository: Repository) -> None:
         self.repository = repository
 
-    def get_component_set(
-        self, channel_id: str, message_id: str
-    ) -> ComponentSetRecord | None:
+    def get_component_set(self, channel_id: str, message_id: str) -> ComponentSetRecord | None:
         stored = self.repository.get_component_set(channel_id, message_id)
         return None if stored is None else component_record(stored)
 
@@ -99,10 +93,3 @@ class MutableReviewProject(ReviewProjectRecord):
     market_id: str
     artifact_dir: str
     created_at: datetime
-
-
-# Compatibility names for code that imported these private adapters from runtime.
-_SqliteRunLocks = SqliteRunLocks
-_RepositoryComponents = RepositoryComponents
-_RepositoryProduction = RepositoryProduction
-_MutableReviewProject = MutableReviewProject

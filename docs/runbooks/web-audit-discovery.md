@@ -10,7 +10,7 @@ Runbook này mô tả workflow local cho discovery đa ngành, audit website, t�
 - Timezone: `Asia/Bangkok`.
 - Discovery: đa ngành; cohort được giữ nguyên trong seed và scoring.
 - Lịch mặc định: `07:30 Asia/Bangkok`, `RandomizedDelaySec=300`, `Persistent=true`.
-- P2 (dashboard, CRM, automated outreach, CMS/auth/billing) chưa thuộc workflow này.
+- P2 (dashboard, CRM, automated outreach, CMS/auth/billing) nằm ngoài phạm vi discovery workflow này (repository vẫn có thư mục dashboard riêng phục vụ review).
 
 ## Local install và dry-run
 
@@ -74,8 +74,8 @@ Nếu OpenClaw không expose Components v2, card hết hạn, hoặc callback kh
 
 ```text
 /lead-approve <project_id>
-/reject <project_id> <reason>
-/request-change <project_id> <note>
+/lead-reject <project_id> <reason>
+/lead-request-change <project_id> <note>
 /page-status <project_id> <page_slug>
 /page-done <project_id> <page_slug>
 /page-approve <project_id> <page_slug>

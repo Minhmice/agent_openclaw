@@ -9,7 +9,9 @@ from openclaw_web.db import Repository, connect, migrate
 from openclaw_web.delivery.components import ComponentSetRecord
 from openclaw_web.delivery.openclaw_transport import SentMessage
 from openclaw_web.models import ComponentSet, DeliveryRecord, DeliveryState, ProjectState
-from openclaw_web.runtime import _component_read_only, _MutableReviewProject, run_legacy_review
+from openclaw_web.runtime_adapters import MutableReviewProject
+from openclaw_web.runtime_components import component_read_only
+from openclaw_web.runtime_legacy import run_legacy_review
 
 GUILD_ID = "1446612692910739637"
 CHANNEL_ID = "1536658476288450630"
@@ -78,7 +80,6 @@ def test_legacy_review_is_idempotent_and_persists_component_identity(
     state_db = tmp_path / "state.sqlite"
     _write_project(workflow_root)
     monkeypatch.setenv("OPENCLAW_WEB_STATE_DB", str(state_db))
-    monkeypatch.setattr("openclaw_web.runtime.OpenClawAgentTransport", FakeTransport)
 
     first = run_legacy_review(
         "vn-ntq-test",
@@ -86,6 +87,7 @@ def test_legacy_review_is_idempotent_and_persists_component_identity(
         review_channel=CHANNEL_ID,
         guild_id=GUILD_ID,
         artifact_root=tmp_path / "artifacts",
+        transport_factory=FakeTransport,
     )
     second = run_legacy_review(
         "vn-ntq-test",
@@ -93,6 +95,7 @@ def test_legacy_review_is_idempotent_and_persists_component_identity(
         review_channel=CHANNEL_ID,
         guild_id=GUILD_ID,
         artifact_root=tmp_path / "artifacts",
+        transport_factory=FakeTransport,
     )
 
     assert first["status"] == "sent"
@@ -104,7 +107,9 @@ def test_legacy_review_is_idempotent_and_persists_component_identity(
         repository = Repository(connection)
         assert repository.connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 1
         assert repository.connection.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] == 1
-        assert repository.connection.execute("SELECT COUNT(*) FROM component_sets").fetchone()[0] == 1
+        assert (
+            repository.connection.execute("SELECT COUNT(*) FROM component_sets").fetchone()[0] == 1
+        )
         component = repository.get_component_set(CHANNEL_ID, MESSAGE_ID)
         assert component is not None
         assert component.allowed_actions == ["approve", "reject", "view-evidence", "refresh"]
@@ -120,8 +125,7 @@ def test_legacy_review_is_idempotent_and_persists_component_identity(
             "refresh",
         ]
         rendered = {
-            button["label"]: button
-            for button in payload["components"]["blocks"][0]["buttons"]
+            button["label"]: button for button in payload["components"]["blocks"][0]["buttons"]
         }
         assert rendered["Reject"]["allowedUsers"] == ["620891893659598850"]
     finally:
@@ -143,7 +147,7 @@ def test_legacy_review_reissues_v1_when_only_an_old_card_exists(
     repository = Repository(connection)
     candidate = repository.upsert_candidate("https://example.com/", "NTQ Solution", None)
     repository.ensure_review_project(
-        _MutableReviewProject(
+        MutableReviewProject(
             project_id="vn-ntq-test",
             candidate_id=candidate.candidate_id,
             market_id="hanoi-80km",
@@ -194,7 +198,6 @@ def test_legacy_review_reissues_v1_when_only_an_old_card_exists(
             )
 
     monkeypatch.setenv("OPENCLAW_WEB_STATE_DB", str(state_db))
-    monkeypatch.setattr("openclaw_web.runtime.OpenClawAgentTransport", VersionedFakeTransport)
 
     result = run_legacy_review(
         "vn-ntq-test",
@@ -202,6 +205,7 @@ def test_legacy_review_reissues_v1_when_only_an_old_card_exists(
         review_channel=CHANNEL_ID,
         guild_id=GUILD_ID,
         artifact_root=artifact_root,
+        transport_factory=VersionedFakeTransport,
     )
 
     assert result["status"] == "sent"
@@ -243,7 +247,7 @@ def test_legacy_review_does_not_reissue_a_card_for_an_approved_project(
     repository = Repository(connection)
     candidate = repository.upsert_candidate("https://example.com/", "NTQ Solution", None)
     repository.ensure_review_project(
-        _MutableReviewProject(
+        MutableReviewProject(
             project_id="vn-ntq-test",
             candidate_id=candidate.candidate_id,
             market_id="hanoi-80km",
@@ -300,7 +304,6 @@ def test_legacy_review_does_not_reissue_a_card_for_an_approved_project(
             raise AssertionError("approved project must not reissue a review card")
 
     monkeypatch.setenv("OPENCLAW_WEB_STATE_DB", str(state_db))
-    monkeypatch.setattr("openclaw_web.runtime.OpenClawAgentTransport", NoSendTransport)
 
     result = run_legacy_review(
         "vn-ntq-test",
@@ -308,6 +311,7 @@ def test_legacy_review_does_not_reissue_a_card_for_an_approved_project(
         review_channel=CHANNEL_ID,
         guild_id=GUILD_ID,
         artifact_root=artifact_root,
+        transport_factory=NoSendTransport,
     )
 
     assert result["status"] == "sent"
@@ -315,7 +319,9 @@ def test_legacy_review_does_not_reissue_a_card_for_an_approved_project(
     assert NoSendTransport.calls == 0
 
 
-def test_legacy_review_evidence_falls_back_to_canonical_project_files(tmp_path: Path, monkeypatch) -> None:
+def test_legacy_review_evidence_falls_back_to_canonical_project_files(
+    tmp_path: Path, monkeypatch
+) -> None:
     workflow_root = tmp_path / "workflow"
     _write_project(workflow_root)
     monkeypatch.setenv("OPENCLAW_WORKFLOW_ROOT", str(workflow_root))
@@ -330,7 +336,7 @@ def test_legacy_review_evidence_falls_back_to_canonical_project_files(tmp_path: 
         state_version=0,
     )
 
-    result = _component_read_only(component, "view-evidence")
+    result = component_read_only(component, "view-evidence")
 
     assert "curie-dossier.md" in result
     assert "image-inventory.json" in result

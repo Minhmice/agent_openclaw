@@ -15,13 +15,15 @@ from openclaw_web.delivery.components import (
     ComponentActionEnvelope,
 )
 from openclaw_web.models import ComponentSet, ProjectState
-from openclaw_web.runtime import (
-    ProductionDiscoveryComposition,
-    _component_result_message,
-    _CoordinatorActions,
-    drain_delivery_outbox,
+from openclaw_web.runtime_components import (
+    CoordinatorActions,
+    component_result_message,
     run_component_action,
     run_component_callback,
+)
+from openclaw_web.runtime_discovery import (
+    ProductionDiscoveryComposition,
+    drain_delivery_outbox,
     run_daily_discovery,
 )
 
@@ -95,9 +97,7 @@ def _seed_callback_project(
     }
     if project_payload is not None:
         payload.update(project_payload)
-    (project_dir / "project.json").write_text(
-        json.dumps(payload), encoding="utf-8"
-    )
+    (project_dir / "project.json").write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("OPENCLAW_WEB_STATE_DB", str(state_db))
     monkeypatch.setenv("OPENCLAW_WORKFLOW_ROOT", str(workflow_root))
     monkeypatch.setenv("OPENCLAW_WEB_DISCORD_GUILD_ID", "1446612692910739637")
@@ -130,7 +130,7 @@ def _seed_callback_project(
 
 def test_coordinator_confirmation_requires_strictly_newer_state_version() -> None:
     repository = _ConfirmationSpy()
-    coordinator = _CoordinatorActions(_SameVersionCoordinator(), repository)
+    coordinator = CoordinatorActions(_SameVersionCoordinator(), repository)
 
     with pytest.raises(TypeError, match="invalid project state"):
         coordinator.execute(
@@ -170,8 +170,7 @@ def test_component_callback_smart_approve_message(
 
     assert result["status"] == "accepted"
     assert result["message_vi"] == (
-        f"Đã duyệt {project_id}. Trạng thái mới: approved. "
-        "Bước tiếp theo: Website Brief."
+        f"Đã duyệt {project_id}. Trạng thái mới: approved. Bước tiếp theo: Website Brief."
     )
 
 
@@ -229,9 +228,7 @@ def test_component_callback_smart_refresh_message(
     )
 
     assert result["status"] == "read-only"
-    assert result["message_vi"] == (
-        f"Refresh {project_id}: trạng thái review, state_version 0."
-    )
+    assert result["message_vi"] == (f"Refresh {project_id}: trạng thái review, state_version 0.")
 
 
 def test_component_callback_smart_stale_message(
@@ -259,9 +256,7 @@ def test_component_callback_smart_stale_message(
     )
 
     assert result["status"] == "stale"
-    assert result["message_vi"] == (
-        f"Thẻ của {project_id} đã cũ; hãy bấm Refresh rồi thử lại."
-    )
+    assert result["message_vi"] == (f"Thẻ của {project_id} đã cũ; hãy bấm Refresh rồi thử lại.")
 
 
 def test_component_callback_smart_blocked_message(
@@ -273,9 +268,7 @@ def test_component_callback_smart_blocked_message(
         monkeypatch,
         project_id,
         allowed_actions=["approve", "refresh"],
-        project_payload={
-            "pages": [{"slug": "home", "unresolved_priority": "P1"}]
-        },
+        project_payload={"pages": [{"slug": "home", "unresolved_priority": "P1"}]},
         message_id="1537000000000099004",
     )
 
@@ -313,7 +306,7 @@ def test_component_result_message_explains_already_processed_action() -> None:
         "/lead-reject project-smart-duplicate",
     )
 
-    message = _component_result_message(
+    message = component_result_message(
         envelope,
         result,
         {"project_id": envelope.project_id, "status": "rejected", "state_version": 1},
@@ -327,7 +320,7 @@ def test_component_result_message_explains_already_processed_action() -> None:
 
 def test_page_status_does_not_create_mutation_confirmation() -> None:
     repository = _ConfirmationSpy()
-    coordinator = _CoordinatorActions(_SameVersionCoordinator(), repository)
+    coordinator = CoordinatorActions(_SameVersionCoordinator(), repository)
 
     completed = coordinator.execute(
         project_id="project-version",
@@ -356,7 +349,7 @@ def test_page_mutation_uses_canonical_project_state_for_confirmation(
     )
     monkeypatch.setenv("OPENCLAW_WORKFLOW_ROOT", str(workflow_root))
     repository = _ConfirmationSpy()
-    coordinator = _CoordinatorActions(_PageMutationCoordinator(), repository)
+    coordinator = CoordinatorActions(_PageMutationCoordinator(), repository)
 
     completed = coordinator.execute(
         project_id="project-page-confirmation",
@@ -421,7 +414,9 @@ def test_production_composition_includes_overpass_without_optional_api_keys(
         encoding="utf-8",
     )
     scoring = tmp_path / "scoring.yaml"
-    scoring.write_text((Path(__file__).parents[2] / "config/scoring/base-v1.yaml").read_text(), encoding="utf-8")
+    scoring.write_text(
+        (Path(__file__).parents[2] / "config/scoring/base-v1.yaml").read_text(), encoding="utf-8"
+    )
     monkeypatch.setenv("OPENCLAW_WEB_STATE_DB", str(state_db))
     monkeypatch.setenv("OPENCLAW_WEB_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.setenv("OPENCLAW_WEB_MARKET_CONFIG", str(market))
@@ -463,7 +458,9 @@ def test_configured_provider_fails_closed_until_full_chain_is_composed(
         encoding="utf-8",
     )
     scoring = tmp_path / "scoring.yaml"
-    scoring.write_text((Path(__file__).parents[2] / "config/scoring/base-v1.yaml").read_text(), encoding="utf-8")
+    scoring.write_text(
+        (Path(__file__).parents[2] / "config/scoring/base-v1.yaml").read_text(), encoding="utf-8"
+    )
     monkeypatch.setenv("OPENCLAW_WEB_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.setenv("OPENCLAW_WEB_MARKET_CONFIG", str(market))
     monkeypatch.setenv("OPENCLAW_WEB_SCORING_CONFIG", str(scoring))
@@ -523,9 +520,7 @@ def test_daily_discovery_renews_sqlite_lock_from_background_thread(
     assert result.exit_code == 0
 
 
-def test_failed_component_coordinator_releases_durable_claim(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_failed_component_coordinator_releases_durable_claim(tmp_path: Path, monkeypatch) -> None:
     state_db = tmp_path / "state.sqlite"
     workflow_root = tmp_path / "workflow"
     workflow_root.mkdir()

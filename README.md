@@ -1,14 +1,61 @@
 # Agent OpenClaw
 
+Repository phục vụ quy trình lead discovery/audit website quanh khu vực Hà Nội, human-gated workflow phê duyệt đa tầng, và dashboard quản lý. Repository này không chứa mã nguồn upstream của hệ thống OpenClaw.
+
+Chi tiết implementation discovery/audit local, Discord Components v2, typed fallbacks, cron, retention và rollback được ghi nhận tại [docs/runbooks/web-audit-discovery.md](docs/runbooks/web-audit-discovery.md). Quy tắc vận hành và an toàn bảo mật cho agent xem tại [AGENTS.md](AGENTS.md).
+
+## Cấu trúc thư mục (Directory map)
+
+- `src/openclaw_web/`: Mã nguồn Python cốt lõi của ứng dụng `agent-openclaw-web`:
+  - `cli.py`: Điểm vào CLI (`openclaw-web`).
+  - `runtime_discovery.py`, `runtime_components.py`, `runtime_legacy.py`: Các module runtime trực tiếp cho từng workflow (không dùng facade trung gian `runtime.py`).
+  - `db/repository.py`: Tầng ghi dữ liệu SQLite cho run records, portfolio và stage outcomes; dashboard đọc qua `dashboard/read_repository.py`.
+  - `lead_contracts.py`, `topology.py`, `models.py`: Schema Pydantic, topological stage flow, và typed contracts.
+  - `pipeline/`, `discovery/`, `audit/`, `scoring/`, `review/`, `delivery/`: Các thành phần xử lý pipeline.
+  - `dashboard/`: Backend HTTP server (`server.py`) và coordinator (`coordinator.py`).
+- `dashboard/`: Giao diện web tĩnh (HTML/CSS/JS) cho lead review, portfolio management, và human-in-the-loop decisions.
+- `agents/`: Đặc tả agent, prompt specs, role contracts (`agents/shared/contracts/`), quality gates, và coordinator workflow.
+- `config/`: Cấu hình thị trường (`config/markets/hanoi-80km.yaml`), cấu hình vai trò agent (`config/agents/roles/`), và scoring rubrics.
+- `tests/`: Bộ kiểm thử tự động gồm `tests/unit/` và `tests/integration/`.
+- `deploy/`: Script cài đặt local (`deploy/install-local.ps1`), script deploy remote, systemd units, và release manifest.
+- `docs/`: Tài liệu kiến trúc và runbook vận hành (`docs/runbooks/web-audit-discovery.md`).
+
+## Local quick start
+
+Cài đặt môi trường Python local bằng script PowerShell có sẵn:
+
+```powershell
+.\deploy\install-local.ps1 -InstallChromium
+```
+
+Script thiết lập virtualenv `.venv`, cài đặt package ở chế độ editable kèm dev dependencies, và tải Chromium cho Playwright.
+
+Sau khi cài đặt, xem CLI help, kiểm tra dependency bằng `health`, rồi chạy `cron-run --dry-run`. Chỉ dry-run bảo đảm không gọi mạng ngoài, không crawl và không gửi Discord.
+
+```powershell
+.\.venv\Scripts\openclaw-web --help
+.\.venv\Scripts\openclaw-web health
+.\.venv\Scripts\openclaw-web cron-run --dry-run
+```
+
+## Ghi chú bảo trì (Maintenance notes)
+
+- **Direct runtime imports:** CLI, deployment và test nhập trực tiếp từ `runtime_discovery.py`, `runtime_components.py`, `runtime_legacy.py`; không đi qua facade tương thích hoặc wrapper DB chuyển tiếp. Transaction và thao tác ghi dữ liệu vẫn thuộc `openclaw_web.db.repository.Repository`.
+- **Phân biệt StageOutcome:**
+  - `openclaw_web.pipeline.stages.ArtifactStageOutcome`: Dataclass lưu trữ checkpoint cached artifacts của từng công đoạn trên ổ đĩa (`pipeline/stages.py`).
+  - `openclaw_web.lead_contracts.StageOutcome`: Pydantic StrictModel định nghĩa cấu trúc dữ liệu resumable stage checkpoint của lead intelligence pipeline, được xác thực schema và lưu trong database SQLite (`lead_contracts.py` & `db/repository.py`).
+
+---
+
+## Remote operations runbook (`100.121.246.38`)
+
 Operational runbook for the OpenClaw instance hosted at `100.121.246.38`.
 
-This repository is intentionally documentation-first. It does not contain the remote OpenClaw application source. A new agent should start with this file and [AGENTS.md](AGENTS.md), load access credentials from its environment or secret provider, inspect the live host, and then follow the approval-gated change workflow below.
+This section is the operational runbook; the repository does not contain the upstream OpenClaw application source. A new agent should start with this section and [AGENTS.md](AGENTS.md), load access credentials from its environment or secret provider, inspect the live host, and then follow the approval-gated change workflow below. Operators must read this full remote runbook before executing remote actions.
 
-Local website discovery/audit implementation details, Components v2 behavior, typed fallbacks, cron, retention, and rollback are documented in [docs/runbooks/web-audit-discovery.md](docs/runbooks/web-audit-discovery.md).
+### Quick start for a new agent
 
-## Quick start for a new agent
-
-### 1. Load non-secret connection metadata
+#### 1. Load non-secret connection metadata
 
 Use `.env.example` as a variable-name reference. The real values must come from the agent runner's environment, an SSH agent, or an approved secret provider. Do not commit `.env.local`, paste a password into this README, or put a password in an SSH command argument.
 
@@ -30,7 +77,7 @@ OPENCLAW_SSH_KEY=<path supplied by the agent environment>
 
 If `OPENCLAW_SSH_KEY` is set to a stale or unavailable path, the wrappers report that condition and continue without an explicit identity file so SSH agent, default-key, or interactive password authentication can still take over.
 
-### 2. Connect
+#### 2. Connect
 
 PowerShell:
 
@@ -57,7 +104,7 @@ To run one remote read-only command:
 
 If the environment is not configured, stop and ask for the approved credential-loading method. Do not ask the user to paste the password into a repository file or expose it in chat.
 
-## Agent workflow
+### Agent workflow
 
 Every new task involving the remote OpenClaw should follow this sequence:
 
@@ -74,7 +121,7 @@ Every new task involving the remote OpenClaw should follow this sequence:
 
 Read-only investigation is allowed while discussing. The following always require explicit approval: editing OpenClaw config, changing agent permissions, enabling/disabling sandboxing, changing systemd units, restarting services, installing/updating packages, changing firewall rules, changing credentials, creating/deleting backups, or modifying Docker/Coolify.
 
-### Discord owner and exec-approval parity
+#### Discord owner and exec-approval parity
 
 If Minh and Wien must have the same OpenClaw owner and Discord exec-approval rights, configure both Discord IDs in both authorization layers. Project approval uses verified Discord buttons or `/lead-approve`; `/approve` is reserved for OpenClaw host-exec approval.
 
@@ -112,9 +159,9 @@ openclaw config get channels.discord.execApprovals
 
 After the narrow merge, validate both policy layers and the Discord path. Do not use `exec-policy preset yolo`, set `security: "full"`, or add `"*"` to an allowlist merely to make the button work. See the [OpenClaw exec-approvals documentation](https://docs.openclaw.ai/tools/exec-approvals) and [Discord channel configuration](https://docs.openclaw.ai/gateway/config-channels).
 
-## Remote system map
+### Remote system map
 
-### Host and runtime
+#### Host and runtime
 
 | Item | Value |
 |---|---|
@@ -128,7 +175,7 @@ After the narrow merge, validate both policy layers and the Discord path. Do not
 | Gateway bind | `127.0.0.1` only |
 | OpenClaw service | User-level `openclaw-gateway.service` |
 
-### Important paths
+#### Important paths
 
 | Purpose | Path |
 |---|---|
@@ -143,7 +190,7 @@ After the narrow merge, validate both policy layers and the Discord path. Do not
 | Runtime log from CLI status | `/tmp/openclaw-1000/openclaw-YYYY-MM-DD.log` |
 | Persistent OpenClaw logs | `/home/minhmice/.openclaw/logs` |
 
-## Read-only health checks
+### Read-only health checks
 
 Run these after connecting and before diagnosing or modifying anything:
 
@@ -181,7 +228,7 @@ systemctl --user cat openclaw-gateway.service
 loginctl show-user minhmice -p State -p Sessions -p Linger
 ```
 
-## Safe modification workflow
+### Safe modification workflow
 
 Before a config change:
 
@@ -200,11 +247,11 @@ systemctl --user status openclaw-gateway.service --no-pager
 
 For a service change, record the previous unit content and expected rollback before applying it. For a firewall or package change, first list the ports/packages that will be affected and explain the possibility of losing SSH access or restarting dependent services.
 
-## Last-known baseline: audit on 2026-08-03
+### Last-known baseline: audit on 2026-08-03
 
 This section is historical. Re-run the live checks above before relying on it.
 
-### Runtime
+#### Runtime
 
 - Ubuntu host had been up for approximately 10 days.
 - Root filesystem was 98 GB with about 41% used.
@@ -214,7 +261,7 @@ This section is historical. Re-run the live checks above before relying on it.
 - The user-level service was enabled, active, and configured with `Restart=always` and a 5-second restart delay.
 - `Linger=yes` was enabled for `minhmice`, allowing the user service to persist outside an interactive login.
 
-### Gateway and Discord
+#### Gateway and Discord
 
 - Gateway was loopback-only at `127.0.0.1:18789`.
 - Gateway connectivity and event loop checks were OK.
@@ -224,7 +271,7 @@ This section is historical. Re-run the live checks above before relying on it.
 - Provider requests returned HTTP 200 but took roughly 4.7–6.4 seconds in sampled logs.
 - At least one Discord reconnect was observed and later recovered.
 
-### Security findings
+#### Security findings
 
 OpenClaw's deep security audit reported zero critical findings and five warnings:
 
@@ -236,7 +283,7 @@ OpenClaw's deep security audit reported zero critical findings and five warnings
 
 The effective Discord policy observed was `dmPolicy=pairing` and `groupPolicy=allowlist`, which reduces exposure but does not by itself prove that every reachable channel member is trusted.
 
-### Host network and backup
+#### Host network and backup
 
 - UFW was enabled, but the configured default input policy was `ACCEPT`.
 - Public listeners included Coolify/Traefik ports `80`, `443`, and `8080`; additional host rules included `7860`, `8000`, and `30000`.
@@ -244,7 +291,7 @@ The effective Discord policy observed was `dmPolicy=pairing` and `groupPolicy=al
 - Local config snapshots existed, but no tested off-host encrypted backup or scheduled OpenClaw restore procedure was found.
 - Pending OS package updates included a Node.js patch, Tailscale, Docker Buildx, timezone data, and distro metadata.
 
-## Recommended remediation order
+### Recommended remediation order
 
 Discuss and approve each item separately:
 
@@ -258,7 +305,7 @@ Discuss and approve each item separately:
 
 Do not expose port `18789` publicly just to make the CLI convenient. Keep the gateway local-only unless there is a specific, reviewed remote-control requirement and a trusted-proxy/auth design.
 
-### Model request timeout
+#### Model request timeout
 
 For `LLM request timed out` or `model idle timeout`, inspect the effective primary model and provider before changing values. The provider timeout covers connection, headers, body streaming, request abort handling, and the provider's model-stream idle watchdog; `agents.defaults.timeoutSeconds` or a run-specific timeout can still be a lower ceiling.
 
@@ -275,17 +322,17 @@ Then inspect only the selected provider's `baseUrl`, model IDs, and timeout valu
 
 The official timeout guidance is in the [OpenClaw agent-loop documentation](https://docs.openclaw.ai/agent-loop) and [model-provider documentation](https://docs.openclaw.ai/concepts/model-providers).
 
-## Troubleshooting
+### Troubleshooting
 
-### Environment variables missing
+#### Environment variables missing
 
 Load them through the agent runner or approved secret provider. `.env.example` is only a template. Do not create or commit a real `.env.local` in this repository.
 
-### SSH fails
+#### SSH fails
 
 Check the host, port, user, key path, SSH agent, and network route. Use the native SSH diagnostic output. Do not retry by putting the password in the command line.
 
-### Gateway appears down
+#### Gateway appears down
 
 Check the user service, not only a system-level service:
 
@@ -295,7 +342,7 @@ openclaw gateway status
 openclaw health
 ```
 
-### Discord is not connected
+#### Discord is not connected
 
 Run:
 
@@ -306,11 +353,11 @@ journalctl --user -u openclaw-gateway.service --since '1 hour ago' --no-pager
 
 Do not rotate the Discord token or restart the gateway without user approval.
 
-### Deep audit reports `operator.read`
+#### Deep audit reports `operator.read`
 
 Treat it as a diagnostic-scope issue. The normal health and Discord credential probe can still be healthy. Report the missing scope and ask whether the user wants to configure a read-only operator credential.
 
-## Credential and data handling
+### Credential and data handling
 
 - Never put the SSH password, gateway password, Discord token, provider key, private key, cookie, or session contents in README, AGENTS, issues, commits, or chat output.
 - Never run `ssh user@host password` or equivalent.

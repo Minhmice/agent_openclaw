@@ -339,7 +339,7 @@ from pathlib import Path
 
 import yaml
 from openclaw_web.health import _playwright_ready
-from openclaw_web.runtime import run_daily_discovery  # noqa: F401
+from openclaw_web.runtime_discovery import run_daily_discovery  # noqa: F401
 
 root = Path(sys.argv[1])
 assets = [root / relative for relative in sys.argv[2:]]
