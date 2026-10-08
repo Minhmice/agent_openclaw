@@ -1,4 +1,10 @@
-"""Contracts and models for Lead Intelligence."""
+"""Contracts and models for Lead Intelligence.
+
+StageOutcome in this module is the canonical Pydantic model for resumable multi-stage
+intelligence runs persisted via LeadStore. It is distinct from
+openclaw_web.pipeline.stages.ArtifactStageOutcome, which models filesystem checkpoints
+in audit workflows.
+"""
 
 from openclaw_web.lead_contracts import (
     ALLOWLISTED_SCREENSHOT_ASSETS,

@@ -1,16 +1,28 @@
-"""Resumable, content-addressed stage execution for audit workflows."""
+"""Resumable, content-addressed stage execution for audit workflows.
+
+Defines ArtifactStageOutcome for filesystem checkpoints in audit pipelines.
+This is distinct from openclaw_web.lead_intelligence.contracts.StageOutcome,
+which is the canonical Pydantic model for multi-stage lead intelligence runs.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 GENERATOR_VERSION = "pipeline-v1"
+
+__all__ = [
+    "GENERATOR_VERSION",
+    "ArtifactStageOutcome",
+    "StageRunner",
+    "canonical_hash",
+]
 
 
 def canonical_hash(value: object) -> str:
@@ -19,7 +31,14 @@ def canonical_hash(value: object) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class StageOutcome:
+class ArtifactStageOutcome:
+    """Filesystem checkpoint outcome for audit pipeline stages.
+
+    Represents a disk-persisted artifact checkpoint for an audit pipeline stage.
+    Distinct from openclaw_web.lead_intelligence.contracts.StageOutcome, which
+    is the canonical database model for resumable lead runs in LeadStore.
+    """
+
     stage_id: str
     stage_name: str
     status: str
@@ -28,6 +47,33 @@ class StageOutcome:
     output_path: str
     reused: bool = False
     error_code: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize artifact stage outcome to a dictionary."""
+        return {
+            "stage_id": self.stage_id,
+            "stage_name": self.stage_name,
+            "status": self.status,
+            "input_hash": self.input_hash,
+            "output_hash": self.output_hash,
+            "output_path": self.output_path,
+            "reused": self.reused,
+            "error_code": self.error_code,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ArtifactStageOutcome:
+        """Deserialize artifact stage outcome from a dictionary."""
+        return cls(
+            stage_id=str(data["stage_id"]),
+            stage_name=str(data["stage_name"]),
+            status=str(data["status"]),
+            input_hash=str(data["input_hash"]),
+            output_hash=str(data["output_hash"]),
+            output_path=str(data["output_path"]),
+            reused=bool(data.get("reused", False)),
+            error_code=data.get("error_code") if data.get("error_code") is not None else None,
+        )
 
 
 class StageRunner:
@@ -53,7 +99,9 @@ class StageRunner:
             "stages": self._stages,
         }
         temporary = self.run_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+        temporary.write_text(
+            json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8"
+        )
         temporary.replace(self.run_path)
 
     def run(
@@ -62,7 +110,7 @@ class StageRunner:
         input_value: object,
         output_name: str,
         producer: Callable[[], object],
-    ) -> StageOutcome:
+    ) -> ArtifactStageOutcome:
         input_hash = canonical_hash(input_value)
         stage_id = f"{stage_name}:{input_hash[:12]}"
         existing = next((item for item in self._stages if item.get("stage_id") == stage_id), None)
@@ -74,7 +122,7 @@ class StageRunner:
             and existing.get("checkpoint", {}).get("input_hash") == input_hash
             and output_path.exists()
         ):
-            return StageOutcome(
+            return ArtifactStageOutcome(
                 stage_id,
                 stage_name,
                 "complete",
@@ -89,7 +137,10 @@ class StageRunner:
             output_hash = canonical_hash(output)
             temporary = output_path.with_suffix(output_path.suffix + ".tmp")
             if output_name.endswith(".json"):
-                temporary.write_text(json.dumps(output, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+                temporary.write_text(
+                    json.dumps(output, ensure_ascii=False, sort_keys=True, indent=2),
+                    encoding="utf-8",
+                )
             else:
                 temporary.write_text(str(output), encoding="utf-8")
             temporary.replace(output_path)
@@ -106,7 +157,9 @@ class StageRunner:
             self._stages = [item for item in self._stages if item.get("stage_name") != stage_name]
             self._stages.append(record)
             self._persist()
-            return StageOutcome(stage_id, stage_name, "complete", input_hash, output_hash, output_name)
+            return ArtifactStageOutcome(
+                stage_id, stage_name, "complete", input_hash, output_hash, output_name
+            )
         except Exception:
             record = {
                 "stage_id": stage_id,

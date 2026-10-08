@@ -19,7 +19,7 @@ from openclaw_web.platform.base import (
     _require_nonblank,
     _utc_text,
 )
-from openclaw_web.lead_contracts import PortfolioEntry, StageOutcome, StageStatus
+from openclaw_web.lead_intelligence.contracts import PortfolioEntry, StageOutcome, StageStatus
 from openclaw_web.models import RunRecord
 from openclaw_web.platform.errors import (
     RepositoryConflict,

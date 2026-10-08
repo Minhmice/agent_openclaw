@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from openclaw_web.lead_contracts import StageOutcome, StageStatus
+from openclaw_web.lead_intelligence.contracts import StageOutcome, StageStatus
 from openclaw_web.topology import CANONICAL_STAGE_FLOW
 
 from .stages import canonical_hash
@@ -36,7 +36,11 @@ class LeadStageExecutor:
     ) -> None:
         if not isinstance(run_id, str) or not run_id.strip():
             raise ValueError("run_id must be a non-blank string")
-        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or not 1 <= max_attempts <= 5:
+        if (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or not 1 <= max_attempts <= 5
+        ):
             raise ValueError("max_attempts must be between 1 and 5")
         self.run_id = run_id.strip()
         self.max_attempts = max_attempts

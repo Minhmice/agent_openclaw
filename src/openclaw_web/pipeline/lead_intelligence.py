@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from openclaw_web.lead_contracts import LeadAssessment, StageOutcome, StageStatus
+from openclaw_web.lead_intelligence.contracts import LeadAssessment, StageOutcome, StageStatus
 
 from .lead_stages import LeadStageExecutor, StageProducer
 from .portfolio import PortfolioDelivery, PortfolioManager
@@ -110,9 +110,7 @@ class LeadIntelligenceEngine:
                 should_deliver = True
                 record_delivery = getattr(self._repository, "record_portfolio_delivery", None)
                 if callable(record_delivery):
-                    should_deliver = cast(
-                        Callable[..., bool], record_delivery
-                    )(
+                    should_deliver = cast(Callable[..., bool], record_delivery)(
                         portfolio_id=delivery.portfolio_id,
                         delivery_id=f"delivery-{uuid.uuid5(uuid.NAMESPACE_URL, delivery.portfolio_id).hex}",
                         idempotency_key=delivery.idempotency_key,
@@ -126,7 +124,9 @@ class LeadIntelligenceEngine:
                     try:
                         self._delivery_sink(delivery)
                     except Exception:
-                        transition = getattr(self._repository, "transition_portfolio_delivery", None)
+                        transition = getattr(
+                            self._repository, "transition_portfolio_delivery", None
+                        )
                         if callable(transition):
                             cast(Callable[..., object], transition)(
                                 delivery.portfolio_id,
@@ -145,7 +145,9 @@ class LeadIntelligenceEngine:
         return LeadIntelligenceRunResult(
             status=status,
             run_id=run_id,
-            portfolio_id=selection.portfolio_id if persisted or self._repository is not None else None,
+            portfolio_id=selection.portfolio_id
+            if persisted or self._repository is not None
+            else None,
             selected_entries=tuple(entry.entry_id for entry in selection.entries),
             evaluated_candidates=len(values),
             provider_failures=failures,
@@ -171,7 +173,9 @@ class LeadIntelligenceEngine:
             get_outcomes = getattr(self._repository, "get_stage_outcomes", None)
             record_outcome = getattr(self._repository, "record_stage_outcome", None)
             if callable(get_outcomes):
-                initial_outcomes = cast(Callable[[str], tuple[StageOutcome, ...]], get_outcomes)(run_id)
+                initial_outcomes = cast(Callable[[str], tuple[StageOutcome, ...]], get_outcomes)(
+                    run_id
+                )
             if callable(record_outcome):
                 callback = cast(Callable[..., object], record_outcome)
 
