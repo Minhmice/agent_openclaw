@@ -81,12 +81,15 @@ def health(json_output: bool = typer.Option(False, "--json", help="Xuat JSON red
         from openclaw_web.health import HealthService, HealthSettings
 
         report = HealthService(HealthSettings.from_environment()).check()
-        _emit({
-            "manual_audit_ready": report.manual_audit_ready,
-            "discovery_ready": report.discovery_ready,
-            "checks": report.checks,
-            "discovery_blockers": report.discovery_blockers,
-        }, json_output=True)
+        _emit(
+            {
+                "manual_audit_ready": report.manual_audit_ready,
+                "discovery_ready": report.discovery_ready,
+                "checks": report.checks,
+                "discovery_blockers": report.discovery_blockers,
+            },
+            json_output=True,
+        )
         return
     _run_service("health")
 
@@ -97,18 +100,30 @@ def audit(
     json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
 ) -> None:
     if dry_run:
-        _emit({"command": "audit", "status": "dry-run", "external_io": False}, json_output=json_output)
+        _emit(
+            {"command": "audit", "status": "dry-run", "external_io": False}, json_output=json_output
+        )
         return
     _run_service("audit")
 
 
 @app.command(help="Kham pha doanh nghiep va website trong thi truong da chon.")
 def discover(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Chi kiem tra market/geofence, khong goi provider."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Chi kiem tra market/geofence, khong goi provider."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
 ) -> None:
     if dry_run:
-        _emit({"command": "discover", "status": "dry-run", "market": "hanoi-80km", "external_io": False}, json_output=json_output)
+        _emit(
+            {
+                "command": "discover",
+                "status": "dry-run",
+                "market": "hanoi-80km",
+                "external_io": False,
+            },
+            json_output=json_output,
+        )
         return
     _run_service("discover")
 
@@ -138,7 +153,7 @@ def delivery(
     json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
 ) -> None:
     if json_output:
-        from openclaw_web.runtime import drain_delivery_outbox
+        from openclaw_web.discovery import drain_delivery_outbox
 
         result = drain_delivery_outbox()
         _emit(result, json_output=True)
@@ -153,8 +168,8 @@ def legacy_review(
     project_id: str = typer.Option(..., "--project-id", help="Project ID trong workflow root."),
     json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
 ) -> None:
+    from openclaw_web.delivery import run_legacy_review
     from openclaw_web.review.legacy import LegacyReviewError
-    from openclaw_web.runtime import run_legacy_review
 
     try:
         result = run_legacy_review(project_id)
@@ -166,14 +181,24 @@ def legacy_review(
 
 @app.command("cron-run", help="Chay discovery dinh ky voi khoa chong chay trung.")
 def cron_run(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Khong acquire lock, crawl hoac gui Discord."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Khong acquire lock, crawl hoac gui Discord."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
 ) -> None:
     if dry_run:
-        _emit({"command": "cron-run", "status": "dry-run", "market": "hanoi-80km", "external_io": False}, json_output=json_output)
+        _emit(
+            {
+                "command": "cron-run",
+                "status": "dry-run",
+                "market": "hanoi-80km",
+                "external_io": False,
+            },
+            json_output=json_output,
+        )
         return
     if json_output:
-        from openclaw_web.runtime import run_daily_discovery
+        from openclaw_web.discovery import run_daily_discovery
 
         result = run_daily_discovery()
         _emit(
@@ -211,7 +236,7 @@ def component_action(
     json_output: bool = typer.Option(False, "--json", help="Xuat JSON redacted."),
 ) -> None:
     if input_path is not None or json_output:
-        from openclaw_web.runtime import run_component_action
+        from openclaw_web.delivery import run_component_action
 
         if input_path is not None and not sys.stdin.isatty():
             probe = sys.stdin.read(1)
@@ -250,7 +275,7 @@ def component_callback(
     if not json_output:
         _run_service("component-callback")
         return
-    from openclaw_web.runtime import run_component_callback
+    from openclaw_web.delivery import run_component_callback
 
     try:
         payload = sys.stdin.buffer.read(65_537)
@@ -322,9 +347,7 @@ def dashboard_serve(
         )
     )
     coordinator = (
-        WorkflowCoordinatorAdapter(coordinator_path)
-        if coordinator_path.is_file()
-        else None
+        WorkflowCoordinatorAdapter(coordinator_path) if coordinator_path.is_file() else None
     )
     try:
         server = DashboardServer(

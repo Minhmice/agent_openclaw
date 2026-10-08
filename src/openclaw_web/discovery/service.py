@@ -11,7 +11,7 @@ import tldextract
 from pydantic import AnyHttpUrl, ValidationError
 
 from openclaw_web.crawl.safety import UnsafeTarget, normalize_url
-from openclaw_web.db.repository import DiscoverySeedBatch, DiscoverySeedUpsertResult
+from openclaw_web.discovery.store import DiscoverySeedBatch, DiscoverySeedUpsertResult
 from openclaw_web.discovery.base import (
     AutomaticDiscoveryProvider,
     DiscoveryConfigurationError,
@@ -118,9 +118,7 @@ class DiscoveryService:
     def normalize_unique(self, seeds: Iterable[CandidateSeed]) -> tuple[CandidateSeed, ...]:
         return tuple(batch.seed for batch in self._normalize_batches(seeds))
 
-    def _normalize_batches(
-        self, seeds: Iterable[CandidateSeed]
-    ) -> tuple[DiscoverySeedBatch, ...]:
+    def _normalize_batches(self, seeds: Iterable[CandidateSeed]) -> tuple[DiscoverySeedBatch, ...]:
         if isinstance(seeds, str | bytes | bytearray):
             raise TypeError("seeds must be a non-string iterable")
         grouped: dict[str, list[CandidateSeed]] = {}
@@ -147,9 +145,7 @@ class DiscoveryService:
         return tuple(
             DiscoverySeedBatch(
                 seed=self._merge_evidence(grouped[identity]),
-                observations=tuple(
-                    sorted(grouped[identity], key=self._canonical_seed_order)
-                ),
+                observations=tuple(sorted(grouped[identity], key=self._canonical_seed_order)),
             )
             for identity in sorted(grouped)[: self._cap]
         )

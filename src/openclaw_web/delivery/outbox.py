@@ -9,7 +9,8 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
-from openclaw_web.db.repository import Repository, RepositoryConflict
+from openclaw_web.delivery.store import DeliveryStore
+from openclaw_web.platform.errors import RepositoryConflict
 from openclaw_web.models import ComponentSet, DeliveryRecord, DeliveryState
 
 from .openclaw_transport import SentMessage
@@ -20,7 +21,7 @@ class DeliveryTransport(Protocol):
 
 
 class OutboxWorker:
-    def __init__(self, repository: Repository, transport: DeliveryTransport) -> None:
+    def __init__(self, repository: DeliveryStore, transport: DeliveryTransport) -> None:
         self.repository, self.transport = repository, transport
 
     def get(self, delivery_id: str) -> DeliveryRecord:
@@ -134,7 +135,7 @@ class OutboxWorker:
                 record.validated_replace(
                     status=DeliveryState.SENDING,
                     last_error=f"component persistence interrupted: {error}"[:500],
-                )
+                ),
             )
         return self._transition(
             record,
@@ -166,14 +167,28 @@ class OutboxWorker:
                     status=DeliveryState.FAILED,
                     attempt_count=record.attempt_count + 1,
                     last_error=str(error)[:500],
-                )
+                ),
             )
         try:
             sent = self.transport.send(record)
         except Exception as error:  # noqa: BLE001 - transport boundary preserves failures for retry
-            return self._transition(record, record.validated_replace(status=DeliveryState.FAILED, attempt_count=record.attempt_count + 1, last_error=str(error)[:500]))
+            return self._transition(
+                record,
+                record.validated_replace(
+                    status=DeliveryState.FAILED,
+                    attempt_count=record.attempt_count + 1,
+                    last_error=str(error)[:500],
+                ),
+            )
         if not sent.message_id or not sent.message_url:
-            return self._transition(record, record.validated_replace(status=DeliveryState.FAILED, attempt_count=record.attempt_count + 1, last_error="missing bot message identity"))
+            return self._transition(
+                record,
+                record.validated_replace(
+                    status=DeliveryState.FAILED,
+                    attempt_count=record.attempt_count + 1,
+                    last_error="missing bot message identity",
+                ),
+            )
         try:
             message_url = self._validated_message_url(record, sent)
         except ValueError as error:
@@ -185,7 +200,7 @@ class OutboxWorker:
                     message_id=sent.message_id,
                     message_url=sent.message_url,
                     last_error=str(error),
-                )
+                ),
             )
         identified = self._transition(
             record,
@@ -194,7 +209,7 @@ class OutboxWorker:
                 message_id=sent.message_id,
                 message_url=message_url,
                 last_error="component persistence interrupted",
-            )
+            ),
         )
         try:
             self._persist_component(identified, metadata)
@@ -210,7 +225,7 @@ class OutboxWorker:
                 identified,
                 identified.validated_replace(
                     last_error=f"component persistence interrupted: {error}"[:500]
-                )
+                ),
             )
         try:
             return self._transition(
