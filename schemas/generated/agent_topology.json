@@ -1,0 +1,275 @@
+{
+  "$defs": {
+    "ExecutionKind": {
+      "description": "How a logical role is executed.",
+      "enum": [
+        "deterministic",
+        "llm",
+        "human",
+        "orchestrator"
+      ],
+      "title": "ExecutionKind",
+      "type": "string"
+    },
+    "RetryPolicy": {
+      "additionalProperties": false,
+      "description": "Bounded retry policy for one role.",
+      "properties": {
+        "backoff_seconds": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Backoff Seconds",
+          "type": "integer"
+        },
+        "max_attempts": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_attempts",
+        "backoff_seconds"
+      ],
+      "title": "RetryPolicy",
+      "type": "object"
+    },
+    "RoleManifest": {
+      "additionalProperties": false,
+      "description": "Complete logical-role contract.\n\nAll operational knobs are explicit so a role cannot inherit a permissive\ntool, workspace, or secret policy by accident.",
+      "properties": {
+        "display_name": {
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "escalation_policy": {
+          "minLength": 1,
+          "title": "Escalation Policy",
+          "type": "string"
+        },
+        "evidence_policy": {
+          "minLength": 1,
+          "title": "Evidence Policy",
+          "type": "string"
+        },
+        "execution_kind": {
+          "$ref": "#/$defs/ExecutionKind"
+        },
+        "fallback_model": {
+          "minLength": 1,
+          "title": "Fallback Model",
+          "type": "string"
+        },
+        "input_schema": {
+          "additionalProperties": true,
+          "title": "Input Schema",
+          "type": "object"
+        },
+        "mission": {
+          "minLength": 1,
+          "title": "Mission",
+          "type": "string"
+        },
+        "non_goals": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Non Goals",
+          "type": "array"
+        },
+        "observability_tags": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Observability Tags",
+          "type": "array"
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "Output Schema",
+          "type": "object"
+        },
+        "primary_model": {
+          "minLength": 1,
+          "title": "Primary Model",
+          "type": "string"
+        },
+        "prompt_includes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Prompt Includes",
+          "type": "array"
+        },
+        "reasoning_budget_seconds": {
+          "maximum": 86400,
+          "minimum": 0,
+          "title": "Reasoning Budget Seconds",
+          "type": "integer"
+        },
+        "retry_policy": {
+          "$ref": "#/$defs/RetryPolicy"
+        },
+        "role_id": {
+          "minLength": 1,
+          "title": "Role Id",
+          "type": "string"
+        },
+        "sandbox_policy": {
+          "minLength": 1,
+          "title": "Sandbox Policy",
+          "type": "string"
+        },
+        "secret_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Secret Refs",
+          "type": "array"
+        },
+        "skills_allow": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Skills Allow",
+          "type": "array"
+        },
+        "spawn_allowlist": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Spawn Allowlist",
+          "type": "array"
+        },
+        "stages": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Stages",
+          "type": "array"
+        },
+        "stop_conditions": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Stop Conditions",
+          "type": "array"
+        },
+        "timeout_seconds": {
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "tools_allow": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Tools Allow",
+          "type": "array"
+        },
+        "tools_deny": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Tools Deny",
+          "type": "array"
+        },
+        "workspace": {
+          "minLength": 1,
+          "title": "Workspace",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role_id",
+        "display_name",
+        "execution_kind",
+        "mission",
+        "non_goals",
+        "workspace",
+        "prompt_includes",
+        "primary_model",
+        "fallback_model",
+        "reasoning_budget_seconds",
+        "tools_allow",
+        "tools_deny",
+        "skills_allow",
+        "sandbox_policy",
+        "spawn_allowlist",
+        "input_schema",
+        "output_schema",
+        "retry_policy",
+        "timeout_seconds",
+        "stop_conditions",
+        "evidence_policy",
+        "escalation_policy",
+        "observability_tags",
+        "secret_refs",
+        "stages"
+      ],
+      "title": "RoleManifest",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Validated logical topology and stable stage order.",
+  "properties": {
+    "redesign_stage_flow": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Redesign Stage Flow",
+      "type": "array"
+    },
+    "roles": {
+      "items": {
+        "$ref": "#/$defs/RoleManifest"
+      },
+      "minItems": 1,
+      "title": "Roles",
+      "type": "array"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage_flow": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Stage Flow",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "stage_flow",
+    "redesign_stage_flow",
+    "roles"
+  ],
+  "title": "AgentTopology",
+  "type": "object"
+}

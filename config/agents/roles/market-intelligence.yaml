@@ -1,0 +1,40 @@
+role_id: market-intelligence
+display_name: Ngọc Hân
+execution_kind: deterministic
+mission: Define a bounded market and cohort from approved configuration.
+non_goals:
+  - Never discover candidates or score businesses.
+workspace: workflow/lead-intelligence/market
+prompt_includes:
+  - agents/shared/VIETNAMESE-LANGUAGE-POLICY.md
+primary_model: none
+fallback_model: none
+reasoning_budget_seconds: 0
+tools_allow:
+  - market-read
+tools_deny:
+  - exec
+  - credential-read
+
+skills_allow:
+  - lead-intelligence
+sandbox_policy: local-read-write
+spawn_allowlist:
+  []
+input_schema: {type: object}
+output_schema: {type: object, required: [schema_version], properties: {schema_version: {type: string}}}
+retry_policy:
+  max_attempts: 2
+  backoff_seconds: 2
+timeout_seconds: 45
+stop_conditions:
+  - define_market
+evidence_policy: evidence-linked
+escalation_policy: coordinator-on-failure
+observability_tags:
+  - market
+  - lead-intelligence
+secret_refs:
+  []
+stages:
+  - define_market

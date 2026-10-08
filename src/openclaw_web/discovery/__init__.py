@@ -31,6 +31,12 @@ from openclaw_web.discovery.batch import (
 from openclaw_web.discovery.batch import (
     ManualUrlDiscoverySource as ManualUrlDiscoverySource,
 )
+from openclaw_web.discovery.nominatim import (
+    NominatimDiscoveryProvider as NominatimDiscoveryProvider,
+)
+from openclaw_web.discovery.nominatim import (
+    NominatimDiscoverySource as NominatimDiscoverySource,
+)
 from openclaw_web.discovery.overpass import (
     OverpassDiscoveryProvider as OverpassDiscoveryProvider,
 )
@@ -97,6 +103,8 @@ __all__ = [
     "GooglePlacesDiscoverySource",
     "JsonDiscoverySource",
     "ManualUrlDiscoverySource",
+    "NominatimDiscoveryProvider",
+    "NominatimDiscoverySource",
     "OverpassDiscoveryProvider",
     "OverpassDiscoverySource",
     "SchedulerCursor",

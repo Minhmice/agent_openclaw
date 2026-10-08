@@ -82,6 +82,21 @@ class WorkflowCoordinatorTests(unittest.TestCase):
         self.assertEqual(project["approved_by"], WIEN)
         self.assertEqual(project["state_version"], before + 1)
 
+    def test_lead_selection_and_watch_are_explicit_non_approval_states(self):
+        self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)
+        before = self.load_project()["state_version"]
+
+        selected = self.run_cmd("lead-select", "acme-demo", "--actor", WIEN)
+        self.assertEqual(selected.returncode, 0)
+        project = self.load_project()
+        self.assertEqual(project["status"], "review")
+        self.assertEqual(project["lead_state"], "selected")
+        self.assertEqual(project["state_version"], before + 1)
+
+        watched = self.run_cmd("lead-watch", "acme-demo", "--actor", WIEN)
+        self.assertEqual(watched.returncode, 0)
+        self.assertEqual(self.load_project()["lead_state"], "watching")
+
     def test_reject_is_idempotent_when_project_already_rejected_with_same_reason(self):
         reason = "cũng đèm đẹp rồi, không nên sửa"
         self.assertEqual(self.run_cmd("init", "--input", str(self.input_path)).returncode, 0)

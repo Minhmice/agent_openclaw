@@ -20,12 +20,13 @@ from urllib.parse import urlsplit
 from openclaw_web.audit.builtin import (
     BuiltinAuditResult,
     PageAuditObservation,
+    ResourceObservation,
     audit_page,
 )
 from openclaw_web.audit.lighthouse import LighthouseMetrics, LighthouseRunResult
 from openclaw_web.crawl.extract import ExtractedPage
 from openclaw_web.crawl.safety import UnsafeTarget, normalize_url
-from openclaw_web.crawl.service import CrawlResult
+from openclaw_web.crawl.service import CrawlFailure, CrawlResult
 from openclaw_web.delivery.components import build_review_card
 from openclaw_web.discovery.base import (
     AutomaticDiscoveryProvider,
@@ -304,6 +305,53 @@ def _contact_observed(pages: Sequence[ExtractedPage]) -> bool:
     return any("contact" in path or "lien-he" in path for path in paths)
 
 
+def _page_resource_observations(
+    page: ExtractedPage,
+    crawl: CrawlResult,
+) -> tuple[ResourceObservation, ...]:
+    """Map crawler outcomes to same-origin link observations without guessing."""
+
+    successful_urls: set[str] = set()
+    for fetched in crawl.pages:
+        try:
+            successful_urls.add(normalize_url(fetched.url))
+        except (TypeError, ValueError, UnsafeTarget):
+            continue
+
+    failures: dict[str, CrawlFailure] = {}
+    for failure in crawl.failures:
+        try:
+            failures.setdefault(normalize_url(failure.url), failure)
+        except (TypeError, ValueError, UnsafeTarget):
+            continue
+
+    page_parts = urlsplit(page.url)
+    page_origin = (page_parts.scheme.casefold(), page_parts.netloc.casefold())
+    observations: list[ResourceObservation] = []
+    seen: set[str] = set()
+    for link in page.links:
+        try:
+            canonical = normalize_url(link)
+        except (TypeError, ValueError, UnsafeTarget):
+            continue
+        link_parts = urlsplit(canonical)
+        if (link_parts.scheme.casefold(), link_parts.netloc.casefold()) != page_origin:
+            continue
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        if canonical in successful_urls:
+            observations.append(ResourceObservation("link", canonical, status_code=200))
+            continue
+        failure_record = failures.get(canonical)
+        status_code = getattr(failure_record, "status_code", None)
+        if isinstance(status_code, int) and not isinstance(status_code, bool):
+            observations.append(ResourceObservation("link", canonical, status_code=status_code))
+        else:
+            observations.append(ResourceObservation("link", canonical))
+    return tuple(observations)
+
+
 def _scoring_inputs(
     rubric: Rubric,
     crawl: CrawlResult,
@@ -321,7 +369,11 @@ def _scoring_inputs(
     supply("audit.has_conversion_cta", any(page.ctas for page in pages))
     if not crawl.failures and not crawl.budget_exhausted:
         supply("crawl.has_contact_page", _contact_observed(pages))
-    if all("resources" not in result.unavailable_inputs for result in audits):
+    if all(
+        "resources" not in result.unavailable_inputs
+        and "link_status" not in result.unavailable_inputs
+        for result in audits
+    ):
         broken = sum(
             len(finding.evidence)
             for result in audits
@@ -604,6 +656,7 @@ class ProductionPipeline:
                 PageAuditObservation(
                     page=page,
                     requested_url=website_url if index == 0 else page.url,
+                    resources=_page_resource_observations(page, crawl),
                     browser=screenshot if index == 0 else None,
                 )
             )

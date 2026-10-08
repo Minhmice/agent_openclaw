@@ -211,7 +211,11 @@ def test_health_settings_from_environment_uses_only_absolute_paths(
     assert settings.market_config is not None and settings.market_config.is_absolute()
     assert settings.scoring_config is not None and settings.scoring_config.is_absolute()
     assert settings.schema_root is not None and settings.schema_root.is_absolute()
-    assert settings.discovery_providers == ("openstreetmap-overpass", "serper")
+    assert settings.discovery_providers == (
+        "openstreetmap-overpass",
+        "openstreetmap-nominatim",
+        "serper",
+    )
     assert "never-return-this-value" not in repr(settings)
 
 
@@ -240,7 +244,10 @@ def test_health_always_recognizes_overpass_without_optional_credentials(
 
     settings = HealthSettings.from_environment()
 
-    assert settings.discovery_providers == ("openstreetmap-overpass",)
+    assert settings.discovery_providers == (
+        "openstreetmap-overpass",
+        "openstreetmap-nominatim",
+    )
 
 
 def test_health_environment_does_not_normalize_relative_artifact_root(

@@ -21,6 +21,7 @@ from openclaw_web.db.connection import (
 from openclaw_web.db.connection import connect as open_connection
 from openclaw_web.db.migrations import Migration, MigrationError, migrate
 from openclaw_web.db.repository import (
+    DashboardActionReceipt,
     DiscoverySeedBatch,
     DiscoverySeedDisposition,
     Repository,
@@ -60,6 +61,10 @@ EXPECTED_TABLES = {
     "component_sets",
     "component_actions",
     "worklog_events",
+    "portfolios",
+    "portfolio_entries",
+    "portfolio_deliveries",
+    "dashboard_action_receipts",
 }
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
 _TEST_THREAD_ID = get_ident()
@@ -326,6 +331,7 @@ def _insert_project_parent(db: sqlite3.Connection, project_id: str = "project-1"
 def test_db_package_exports_typed_persistence_errors() -> None:
     assert db_package.__all__ == [
         "ConnectionConfigurationError",
+        "DashboardActionReceipt",
         "DiscoverySeedBatch",
         "DiscoverySeedDisposition",
         "DiscoverySeedUpsertResult",
@@ -340,6 +346,7 @@ def test_db_package_exports_typed_persistence_errors() -> None:
         "migrate",
     ]
     assert db_package.ConnectionConfigurationError is ConnectionConfigurationError
+    assert db_package.DashboardActionReceipt is DashboardActionReceipt
     assert db_package.DiscoverySeedBatch is DiscoverySeedBatch
     assert db_package.MigrationError is MigrationError
 
@@ -364,11 +371,11 @@ def test_connect_configures_sqlite_and_migrate_is_idempotent(tmp_path: Path) -> 
         for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     assert EXPECTED_TABLES == tables
-    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
     migration_rows = db.execute(
         "SELECT version, checksum, applied_at FROM schema_migrations"
     ).fetchall()
-    assert [row["version"] for row in migration_rows] == [1, 2, 3]
+    assert [row["version"] for row in migration_rows] == [1, 2, 3, 4]
     for row, migration in zip(migration_rows, migration_module._MIGRATIONS, strict=True):
         assert row["checksum"] == migration.checksum
         assert len(row["checksum"]) == 64
@@ -793,7 +800,7 @@ def test_migration_failure_rolls_back_every_statement(
     ).fetchone()[0] == 0
     monkeypatch.setattr(migration_module, "_MIGRATIONS", original)
     migrate(db)
-    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
 
 
 def test_migration_commit_failure_rolls_back_schema_and_connection_is_reusable(
@@ -809,7 +816,7 @@ def test_migration_commit_failure_rolls_back_schema_and_connection_is_reusable(
     assert db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] == 0
 
     migrate(db)
-    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
 
 
 def test_migrate_rejects_caller_transaction_without_committing_it(tmp_path: Path) -> None:
@@ -827,7 +834,7 @@ def test_migrate_rejects_caller_transaction_without_committing_it(tmp_path: Path
     ).fetchone()[0] == 0
 
     migrate(db)
-    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+    assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
 
 
 def test_deferred_foreign_key_commit_failure_rolls_back_repository_transaction(

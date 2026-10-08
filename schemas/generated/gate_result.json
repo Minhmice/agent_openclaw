@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Independent AND gate result; no average can compensate for a failure.",
+  "properties": {
+    "agency_fit": {
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Agency Fit",
+      "type": "number"
+    },
+    "business_strength": {
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Business Strength",
+      "type": "number"
+    },
+    "digital_gap": {
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Digital Gap",
+      "type": "number"
+    },
+    "failed_dimensions": {
+      "items": {
+        "type": "string"
+      },
+      "readOnly": true,
+      "title": "Failed Dimensions",
+      "type": "array"
+    },
+    "passed": {
+      "readOnly": true,
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "default": "lead-intelligence.contracts.v1",
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "thresholds": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Thresholds",
+      "type": "object"
+    }
+  },
+  "required": [
+    "business_strength",
+    "agency_fit",
+    "digital_gap",
+    "passed",
+    "failed_dimensions"
+  ],
+  "title": "GateResult",
+  "type": "object"
+}

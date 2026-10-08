@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b1116" />
+    <title>OpenClaw / Lead Intelligence Control</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true"><span>OC</span></span>
+          <div>
+            <p class="eyebrow">OPENCLAW / CONTROL PLANE</p>
+            <h1>Lead Intelligence</h1>
+            <p class="brand-subtitle">Bảng điều khiển pipeline và human approval</p>
+          </div>
+        </div>
+        <div class="service-cluster">
+          <div class="connection-readout">
+            <span class="signal-dot" aria-hidden="true"></span>
+            <div>
+              <span class="service-label">Service</span>
+              <strong id="service-status">Đang kết nối</strong>
+            </div>
+          </div>
+          <span id="freshness-badge" class="status-badge status-neutral">Đang kết nối</span>
+          <span id="last-updated" class="microcopy">Chưa có snapshot</span>
+          <button id="refresh-button" class="button button-quiet" type="button">Làm mới</button>
+        </div>
+      </header>
+
+      <section id="stale-banner" class="notice notice-warning" hidden role="status">
+        <strong>Snapshot cũ</strong>
+        <span>API đang lỗi hoặc chưa phản hồi. Dữ liệu dưới đây được giữ nguyên, không phải trạng thái mới.</span>
+      </section>
+      <section id="error-banner" class="notice notice-error" hidden role="alert"></section>
+      <section id="action-feedback" class="notice notice-success" hidden role="status"></section>
+
+      <section class="metric-grid" aria-label="Tổng quan pipeline">
+        <article class="metric-card metric-card-primary">
+          <span class="metric-label">Run hiện tại</span>
+          <strong id="metric-run">Chưa có run</strong>
+          <code id="metric-run-id">N/A</code>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Đã phát hiện</span>
+          <strong id="metric-discovered">N/A</strong>
+          <span class="metric-note">candidate trong read model</span>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Gate survivors</span>
+          <strong id="metric-survivors">N/A</strong>
+          <span class="metric-note">đã qua điều kiện độc lập</span>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Human approval</span>
+          <strong id="metric-approved">N/A</strong>
+          <span class="metric-note">project được xác nhận</span>
+        </article>
+      </section>
+
+      <section class="hero-grid" aria-label="Trạng thái hiện tại">
+        <article class="panel run-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">CURRENT RUN</p>
+              <h2 id="run-status">Chưa có run</h2>
+            </div>
+            <span id="run-state" class="state-chip">N/A</span>
+          </div>
+          <div class="run-meta">
+            <div><span>Run ID</span><code id="run-id">N/A</code></div>
+            <div><span>Stage</span><strong id="current-stage">N/A</strong></div>
+            <div><span>Agent</span><strong id="current-agent">N/A</strong></div>
+            <div><span>Evaluated</span><strong id="evaluated-count">N/A</strong></div>
+          </div>
+          <div class="progress-track" aria-hidden="true"><span id="run-progress"></span></div>
+          <div class="run-footer"><span id="run-progress-label">0 / 17 stage</span><span>bounded execution</span></div>
+        </article>
+        <article class="panel signal-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">SYSTEM SIGNAL</p>
+              <h2 id="signal-status">Read model</h2>
+            </div>
+            <span class="signal-code">API / V1</span>
+          </div>
+          <p id="signal-copy" class="panel-copy">Đang đọc trạng thái live từ workflow database.</p>
+          <div class="signal-list">
+            <div><span>Transport</span><strong>Loopback upstream</strong></div>
+            <div><span>Polling</span><strong>15s / backoff</strong></div>
+            <div><span>Public access</span><strong>Proxy + TLS</strong></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel stage-panel" aria-labelledby="stage-title">
+        <div class="panel-heading panel-heading-wide">
+          <div>
+            <p class="eyebrow">PIPELINE RAIL</p>
+            <h2 id="stage-title">17 stage lead flow</h2>
+            <p class="section-subtitle">Mỗi stage có một owner rõ ràng; role ID vẫn giữ nguyên cho runtime.</p>
+          </div>
+          <div class="stage-summary"><span id="stage-count" class="microcopy">0 / 17</span><span class="legend-item"><i class="legend-swatch legend-done"></i>Đã xong</span><span class="legend-item"><i class="legend-swatch legend-current"></i>Đang chạy</span></div>
+        </div>
+        <ol id="stage-rail" class="stage-rail"></ol>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel funnel-panel" aria-labelledby="funnel-title">
+          <div class="panel-heading panel-heading-wide">
+            <div>
+              <p class="eyebrow">QUALIFICATION FUNNEL</p>
+              <h2 id="funnel-title">Evidence narrows the field</h2>
+            </div>
+            <span class="panel-kicker">COUNT</span>
+          </div>
+          <div id="funnel" class="funnel"></div>
+        </article>
+
+        <article class="panel event-panel" aria-labelledby="events-title">
+          <div class="panel-heading panel-heading-wide">
+            <div>
+              <p class="eyebrow">AUDIT TRAIL</p>
+              <h2 id="events-title">Recent events</h2>
+            </div>
+            <span class="panel-kicker">READ ONLY</span>
+          </div>
+          <div id="events" class="event-list"></div>
+        </article>
+      </section>
+
+      <section class="panel portfolio-panel" aria-labelledby="portfolio-title">
+        <div class="panel-heading panel-heading-wide">
+          <div>
+            <p class="eyebrow">PORTFOLIO / MAX 7</p>
+            <h2 id="portfolio-title">Human review queue</h2>
+            <p class="section-subtitle">Lead được xếp hạng nhưng không tự chạy redesign trước khi có xác nhận.</p>
+          </div>
+          <div class="portfolio-summary"><span id="portfolio-count">N/A</span><span id="portfolio-health" class="state-chip">Chờ dữ liệu</span></div>
+        </div>
+        <div id="portfolio" class="portfolio-grid"></div>
+      </section>
+
+      <section class="panel roster-panel" aria-labelledby="roster-title">
+        <div class="panel-heading panel-heading-wide">
+          <div>
+            <p class="eyebrow">AGENT ROSTER</p>
+            <h2 id="roster-title">Đội hình vận hành</h2>
+            <p class="section-subtitle">Tên hiển thị thân thiện; role ID là identity kỹ thuật bất biến.</p>
+          </div>
+          <span class="panel-kicker">17 ROLES</span>
+        </div>
+        <div id="agent-roster" class="agent-roster">
+          <div class="agent-row"><span class="agent-index">01</span><strong>An Minh</strong><code>orchestrator</code></div>
+        </div>
+      </section>
+
+      <section class="panel access-panel" aria-labelledby="access-title">
+        <div>
+          <p class="eyebrow">ACTION ACCESS</p>
+          <h2 id="access-title">Phiên điều khiển</h2>
+          <p class="panel-copy">Bearer token chỉ tồn tại trong memory của tab này. Actor canonical và quyền được server xác định; không nhập actor ID. Public URL phải terminate TLS và auth ở reverse proxy trước khi chuyển vào upstream loopback.</p>
+        </div>
+        <div class="access-form">
+          <label for="token-input">Dashboard token</label>
+          <div class="token-row">
+            <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="Dán token từ secret provider" />
+            <button id="clear-token" class="button button-quiet" type="button">Xoá phiên</button>
+          </div>
+          <span id="permission-copy" class="microcopy">Chưa xác thực actor.</span>
+        </div>
+      </section>
+
+      <footer class="footer-line">
+        <span>Loopback upstream · public URL qua reverse proxy + TLS</span>
+        <code>127.0.0.1:18080</code>
+      </footer>
+    </main>
+
+    <dialog id="action-dialog" class="action-dialog">
+      <form method="dialog" id="action-form">
+        <p class="eyebrow">CONFIRM ACTION</p>
+        <h2 id="dialog-title">Xác nhận action</h2>
+        <p id="dialog-copy" class="panel-copy"></p>
+        <label for="reason-input">Lý do <span class="optional">(bắt buộc với reject / change / block)</span></label>
+        <textarea id="reason-input" rows="3" maxlength="500" placeholder="Ghi chú ngắn cho workflow"></textarea>
+        <div class="dialog-actions">
+          <button class="button button-quiet" value="cancel" type="submit">Huỷ</button>
+          <button id="confirm-action" class="button button-accent" value="confirm" type="button">Gửi action</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

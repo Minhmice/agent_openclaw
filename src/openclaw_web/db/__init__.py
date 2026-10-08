@@ -3,6 +3,7 @@
 from openclaw_web.db.connection import ConnectionConfigurationError, connect, managed_connection
 from openclaw_web.db.migrations import MigrationError, migrate
 from openclaw_web.db.repository import (
+    DashboardActionReceipt,
     DiscoverySeedBatch,
     DiscoverySeedDisposition,
     DiscoverySeedUpsertResult,
@@ -15,6 +16,7 @@ from openclaw_web.db.repository import (
 
 __all__ = [
     "ConnectionConfigurationError",
+    "DashboardActionReceipt",
     "DiscoverySeedBatch",
     "DiscoverySeedDisposition",
     "DiscoverySeedUpsertResult",

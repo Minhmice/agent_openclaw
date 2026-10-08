@@ -1,0 +1,40 @@
+role_id: dealability
+display_name: Bảo Ngọc
+execution_kind: llm
+mission: Estimate observable dealability proxies before outreach.
+non_goals:
+  - Never create buyer_intent or engagement fields.
+workspace: workflow/lead-intelligence/dealability
+prompt_includes:
+  - agents/shared/VIETNAMESE-LANGUAGE-POLICY.md
+primary_model: configured-provider
+fallback_model: configured-fallback
+reasoning_budget_seconds: 120
+tools_allow:
+  - evidence-read
+tools_deny:
+  - exec
+  - credential-read
+
+skills_allow:
+  - lead-intelligence
+sandbox_policy: workspace-only
+spawn_allowlist:
+  []
+input_schema: {type: object}
+output_schema: {type: object, required: [schema_version], properties: {schema_version: {type: string}}}
+retry_policy:
+  max_attempts: 2
+  backoff_seconds: 2
+timeout_seconds: 180
+stop_conditions:
+  - no-intent-before-outreach
+evidence_policy: evidence-linked
+escalation_policy: coordinator-on-failure
+observability_tags:
+  - dealability
+  - lead-intelligence
+secret_refs:
+  []
+stages:
+  - dealability

@@ -4,6 +4,33 @@ The `main` agent is the Discord-facing coordinator. It does not replace Curie, W
 
 Read and enforce [QUALITY-GATES.md](QUALITY-GATES.md) before routing a stage transition.
 
+## Lead Intelligence contract
+
+The local pipeline owns these stable logical stages:
+
+```text
+define_market, discover, resolve_entities, cheap_filter, business_fit,
+agency_fit, digital_gap, deep_audit, commercial_opportunity, dealability,
+evidence_verification, red_team, score_survivors, rank, portfolio_selection,
+human_approval, redesign_intelligence
+```
+
+The qualification gate is conjunctive: `BusinessStrength >= 60`,
+`AgencyFit >= 65`, and `DigitalGap >= 55` must all pass. Do not use an average
+to compensate for a failed dimension. Preserve the independent score fields
+and `EvidenceConfidence`; before outreach never create `buyer_intent`,
+`engagement`, or an equivalent intent signal.
+
+`red_team` returns only `survive`, `downgrade`, or `reject`. A rejected or
+unsupported candidate is excluded from the portfolio. Provider failure is
+reported as `partial`, `failed_retryable`, or `no_candidate_defensible` as
+appropriate; never manufacture a lead to reach the portfolio target.
+
+Portfolio selection is bounded to 3–7 entries, targeting 5. Selection creates
+an entry waiting for human action; it does not dispatch
+`redesign_intelligence`. Redesign starts only after a human approval transition
+has been accepted by the coordinator.
+
 ## Ngôn ngữ giao tiếp
 
 Đọc và tuân thủ [VIETNAMESE-LANGUAGE-POLICY.md](VIETNAMESE-LANGUAGE-POLICY.md). Mọi reply cho Minh/Wien, message Discord, status, reminder và handoff narrative phải viết bằng tiếng Việt tự nhiên. Giữ nguyên command, project ID, channel ID, actor ID, URL, path, state name và JSON/YAML key.
@@ -31,6 +58,12 @@ curie         discovery/business lead mining
 website-brief approved website extraction + redesign package
 project-pm    page checklist, schedule, reminders, final handoff
 ```
+
+The topology manifest under `config/agents/` is the source of truth for
+logical role boundaries. Deterministic roles run locally when possible. The
+orchestrator routes typed outputs and does not produce business judgment;
+ranker receives specialist outputs only and never crawls/searches. Physical
+OpenClaw agent mapping is rendered only after live schema verification.
 
 ## Natural-language discovery trigger in `discuss`
 
@@ -66,6 +99,23 @@ Follow [curie-handoff.md](contracts/curie-handoff.md) and [curie-report.md](cont
 7. `/page-approve` may be issued by the assigned Minh or Wien only after the page checklist is complete, stakeholder review is recorded, and no unresolved P0/P1 issue remains.
 8. `/final-confirm` may be issued once by each of Minh and Wien. The final project transition to `offer-ready` requires every page approved plus both confirmations. Minh may explicitly override this in a message; record the override in the worklog.
 9. Send the final offer-ready package only to channel `1536659097649422356`.
+
+### Dashboard action adapter
+
+`/api/v1/actions` is an authenticated input surface for these same transitions:
+
+```text
+select-lead, watch-lead, lead-approve, lead-reject, lead-request-change,
+page-status, page-done, page-approve, block, final-confirm
+```
+
+The server derives the actor from `Authorization: Bearer <token>` and passes
+the canonical actor ID to the workflow coordinator. It rejects a body
+`actor_id`, a missing `expected_state_version`, or a missing
+`idempotency_key`. The action service claims a receipt before calling the
+coordinator, keeps a retryable receipt pending across a coordinator outage,
+and never updates workflow state directly. `401`, `403`, `409`, and `503`
+retain their meaning at the HTTP boundary.
 
 ## Commands
 
@@ -108,6 +158,67 @@ openclaw agent --agent project-pm --message "Create/update the PM record from /h
 ## Worklog
 
 Append a concise event to `/home/minhmice/.openclaw/workflow/WORKLOG.md` after every handoff, approval, page transition, reminder decision, error, and finalization. Never write secrets or message/session contents to the worklog.
+
+## High-priority Codex quota routing
+
+When Minh asks `check quota`, `quota`, `Codex quota`, or `9Router quota` in
+discuss channel `1533645084229369996`, execute the deterministic quota-check
+command before composing a reply. Never answer with OpenClaw agent
+context/token usage; only the runner output is the quota answer. Individual
+Codex accounts that are unavailable or malformed are skipped, and a collector
+error is reported only when no valid Codex account remains.
+
+## Codex quota check
+
+The quota checker is one deterministic command. It reads 9Router over HTTP, sums the
+remaining Codex percentages, generates at most one short quote request, and sends the
+sanitized report directly to the task channel:
+
+```bash
+OPENCLAW_WORKFLOW_ROOT=/home/minhmice/.openclaw/workflow \
+python3 /home/minhmice/.openclaw/workspace/workflow/quota_check.py --send
+```
+
+The configured defaults are `NINEROUTER_BASE_URL=http://192.168.0.136:20128`,
+`NINEROUTER_API_URL=http://192.168.0.136:20128/api/providers/client?page=1&pageSize=100&accountStatus=all&sort=priority&provider=codex`,
+`NINEROUTER_QUOTA_PATH=/dashboard/quota`, and
+`QUOTA_DISCORD_CHANNEL=1533643473486348458`, with `QUOTA_INTERVAL=3h` anchored when
+the cron is created. The API first lists Codex connections and then reads
+`/api/usage/{connectionId}` for each one; HTML parsing is only a fallback when the
+API route is unavailable. Never add a password, cookie, account email, session value,
+or API token to this file or to a command argument. If authentication is required,
+load `NINEROUTER_AUTH_COOKIE` (the complete `Cookie` header value) or
+`NINEROUTER_AUTH_TOKEN` through the approved secret provider.
+
+Use an OpenClaw cron in `command` mode with `every 3h`, anchored when the job is
+created. Keep `delivery.mode=none`; the script owns the explicit Discord target and
+must not be wrapped in an `agentTurn`. Create the job disabled, run `--dry-run`, send
+one controlled test, inspect the job JSON, and enable it only after the route, gateway,
+Discord probe, and state file have been verified.
+
+The first consecutive collector failure is silent. The second sends one
+`CODEX QUOTA CHECK — TECHNICAL ALERT`; later failures stay silent until a successful
+read resets the failure state. A successful read below `100%` uses the stronger
+focus reminder. Model quote failures use the local `quotes.json` fallback and never
+prevent a valid quota report from being sent.
+
+For a one-off quota request explicitly made in discuss channel `1533645084229369996`,
+run the same runner with the discuss target and a separate state file:
+
+```bash
+set -a
+. /home/minhmice/.openclaw/workspace/workflow/.quota-check.env
+set +a
+python3 /home/minhmice/.openclaw/workspace/workflow/quota_check.py \
+  --send \
+  --channel 1533645084229369996 \
+  --state-file /home/minhmice/.openclaw/workflow/codex-quota-discuss-state.json
+```
+
+This is an on-demand check, not a second recurring cron. It must not reuse the
+scheduled channel state file. Unavailable or malformed individual Codex accounts are
+skipped; the message sums the remaining valid accounts. It reports a collector error
+only when no valid Codex account remains.
 
 ## Reminder implementation
 

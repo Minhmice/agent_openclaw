@@ -16,6 +16,7 @@ COMMANDS = (
     "component-action",
     "component-callback",
     "cron-run",
+    "dashboard-serve",
     "delivery",
     "discover",
     "feedback",
@@ -23,7 +24,10 @@ COMMANDS = (
     "legacy-review",
     "validate",
 )
-SERVICE_COMMANDS = tuple(command for command in COMMANDS if command != "legacy-review")
+SERVICE_COMMANDS = tuple(
+    command for command in COMMANDS if command not in {"legacy-review", "dashboard-serve"}
+)
+CLI_OUTPUT_COMMANDS = tuple(command for command in COMMANDS if command != "dashboard-serve")
 
 
 class RecordingRegistry:
@@ -327,7 +331,7 @@ def test_each_command_resolves_and_invokes_its_matching_service_once(
     assert handler_calls == 1
 
 
-@pytest.mark.parametrize("arguments", [["--help"], *[[command] for command in COMMANDS]])
+@pytest.mark.parametrize("arguments", [["--help"], *[[command] for command in CLI_OUTPUT_COMMANDS]])
 def test_cli_output_is_legacy_windows_safe(arguments: list[str]) -> None:
     result = CliRunner().invoke(cli.app, arguments)
 

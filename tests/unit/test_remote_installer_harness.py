@@ -21,6 +21,9 @@ ENV_KEYS = {
     "OPENCLAW_WORKFLOW_ROOT",
     "OPENCLAW_WEB_DISCORD_GUILD_ID",
     "OPENCLAW_WEB_REVIEW_CHANNEL_ID",
+    "OPENCLAW_WEB_DASHBOARD_HOST",
+    "OPENCLAW_WEB_DASHBOARD_PORT",
+    "OPENCLAW_WEB_DASHBOARD_ROOT",
     "CHROME_PATH",
     "OPENCLAW_WEB_CHROME_NO_SANDBOX",
     "PATH",
@@ -40,7 +43,7 @@ def _write_executable(path: Path, body: str) -> None:
 
 def _copy_source(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "source"
-    for directory in ("agents", "config", "schemas", "deploy"):
+    for directory in ("agents", "config", "schemas", "deploy", "dashboard", "src"):
         shutil.copytree(ROOT / directory, source / directory)
     wheel = source / "dist" / "package.whl"
     wheel.parent.mkdir(parents=True)
@@ -1026,3 +1029,131 @@ def test_installer_refuses_reused_backup_before_any_mutation(tmp_path: Path) -> 
     assert result.stdout == ""
     assert result.stderr == "backup root already exists\n"
     assert marker.read_text(encoding="utf-8") == "owned"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is unavailable")
+def test_installer_hash_helper_preserves_order_hashes_modes_and_rejects_escape(tmp_path: Path) -> None:
+    root = tmp_path / "approved"
+    root.mkdir()
+    first = root / "first.txt"
+    second = root / "nested" / "second.txt"
+    second.parent.mkdir()
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    output = tmp_path / "hashes.tsv"
+    result = subprocess.run(
+        [
+            "bash",
+            _bash_path(ROOT / "deploy" / "installer-hash-helper.sh"),
+            _bash_path(root),
+            _bash_path(output),
+            "first.txt",
+            "nested/second.txt",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = output.read_text(encoding="utf-8").splitlines()
+    assert rows[0] == "path\tsha256\tmode"
+    assert rows[1].startswith("first.txt\t")
+    assert rows[2].startswith("nested/second.txt\t")
+    assert rows[1].split("\t")[1] == __import__("hashlib").sha256(b"first").hexdigest()
+    assert rows[2].split("\t")[1] == __import__("hashlib").sha256(b"second").hexdigest()
+    assert all(len(row.split("\t")[2]) == 4 for row in rows[1:])
+
+    rejected = subprocess.run(
+        [
+            "bash",
+            _bash_path(ROOT / "deploy" / "installer-hash-helper.sh"),
+            _bash_path(root),
+            _bash_path(tmp_path / "rejected.tsv"),
+            "../outside.txt",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert "unsafe relative path" in rejected.stderr
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is unavailable")
+def test_installer_profile_captures_cold_and_warm_runs(tmp_path: Path) -> None:
+    def read_profile(backup: Path) -> dict[str, str | dict[str, int]]:
+        phases: dict[str, int] = {}
+        metrics: dict[str, str] = {}
+        for row in (backup / "install-profile.tsv").read_text(encoding="utf-8").splitlines()[1:]:
+            fields = row.split("\t")
+            if fields[0] == "phase":
+                phases[fields[1]] = int(fields[2])
+            else:
+                key, value = fields[1].split("=", 1)
+                metrics[key] = value
+        return {"phases": phases, **metrics}
+
+    def run_install(root: Path, backup_name: str) -> dict[str, str | dict[str, int]]:
+        root.mkdir()
+        home = root / "home"
+        home.mkdir()
+        source, wheel = _copy_source(root)
+        fake_bin, log = _fake_commands(root)
+        result = _run(
+            "deploy/install-remote.sh",
+            [wheel, source, home / ".openclaw" / "backups" / backup_name],
+            home=home,
+            fake_bin=fake_bin,
+            log=log,
+            extra_env={"OPENCLAW_INSTALL_PROFILE": "1"},
+        )
+        assert result.returncode == 0, result.stderr
+        return read_profile(home / ".openclaw" / "backups" / backup_name)
+
+    cold_profiles = [
+        run_install(tmp_path / f"cold-{index}", "profile") for index in range(3)
+    ]
+
+    warm_root = tmp_path / "warm"
+    warm_root.mkdir()
+    warm_home = warm_root / "home"
+    warm_home.mkdir()
+    warm_source, warm_wheel = _copy_source(warm_root)
+    warm_fake_bin, warm_log = _fake_commands(warm_root)
+    warm_profiles: list[dict[str, str | dict[str, int]]] = []
+    for index in range(3):
+        backup = warm_home / ".openclaw" / "backups" / f"profile-{index}"
+        result = _run(
+            "deploy/install-remote.sh",
+            [warm_wheel, warm_source, backup],
+            home=warm_home,
+            fake_bin=warm_fake_bin,
+            log=warm_log,
+            extra_env={"OPENCLAW_INSTALL_PROFILE": "1"},
+        )
+        assert result.returncode == 0, result.stderr
+        warm_profiles.append(read_profile(backup))
+
+    expected_asset_count = sum(
+        bool(line.strip()) and not line.lstrip().startswith("#")
+        for line in (warm_source / "deploy" / "release-manifest.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    required_phases = {"preflight", "service-stopped", "backup-ready", "installed", "complete"}
+    for profile in [*cold_profiles, *warm_profiles]:
+        phases = profile["phases"]
+        assert isinstance(phases, dict)
+        assert required_phases <= phases.keys()
+        assert int(profile["sha256sum_calls"]) > 0
+        assert int(profile["cut_calls"]) > 0
+        assert int(profile["stat_calls"]) > 0
+        assert int(profile["hash_helper_processes"]) == 1
+        assert int(profile["hash_stat_pass_processes"]) == 1
+        assert int(profile["manifest_assets"]) == expected_asset_count
+
+    cold_wall = sorted(int(profile["wall_seconds"]) for profile in cold_profiles)
+    warm_wall = sorted(int(profile["wall_seconds"]) for profile in warm_profiles)
+    assert len(cold_wall) == len(warm_wall) == 3
+    assert all(seconds >= 0 for seconds in [*cold_wall, *warm_wall])

@@ -1,0 +1,40 @@
+role_id: ux-conversion-auditor
+display_name: Mai Anh
+execution_kind: llm
+mission: Assess conversion, UX and trust gaps from website evidence.
+non_goals:
+  - Never receive BusinessStrengthScore.
+workspace: workflow/lead-intelligence/ux
+prompt_includes:
+  - agents/shared/VIETNAMESE-LANGUAGE-POLICY.md
+primary_model: configured-provider
+fallback_model: configured-fallback
+reasoning_budget_seconds: 120
+tools_allow:
+  - http-read
+tools_deny:
+  - exec
+  - credential-read
+
+skills_allow:
+  - lead-intelligence
+sandbox_policy: workspace-only
+spawn_allowlist:
+  []
+input_schema: {type: object, properties: {captured_pages: {type: object}, technical_findings: {type: object}}}
+output_schema: {type: object, required: [schema_version], properties: {schema_version: {type: string}}}
+retry_policy:
+  max_attempts: 2
+  backoff_seconds: 2
+timeout_seconds: 180
+stop_conditions:
+  - evidence-required
+evidence_policy: evidence-linked
+escalation_policy: coordinator-on-failure
+observability_tags:
+  - ux-gap
+  - lead-intelligence
+secret_refs:
+  []
+stages:
+  - digital_gap

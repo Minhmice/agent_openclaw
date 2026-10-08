@@ -245,6 +245,36 @@ def cmd_request_change(args: argparse.Namespace) -> None:
     print(json.dumps(project, ensure_ascii=False, indent=2))
 
 
+def cmd_lead_portfolio_state(args: argparse.Namespace, *, state: str, event: str) -> None:
+    """Record a bounded portfolio lead decision without approving redesign."""
+
+    require_actor(args.actor, {MINH_ID, WIEN_ID})
+    project = load(args.project_id)
+    if project.get("status") in {"rejected", "archived", "offer-ready"}:
+        raise ValueError("cannot update a terminal lead")
+    current = str(project.get("lead_state") or "awaiting-command")
+    if current == state:
+        result = dict(project)
+        result["idempotent"] = True
+        log(f"{event}-idempotent", project["project_id"], f"actor={args.actor}")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    project["lead_state"] = state
+    project["lead_state_changed_by"] = args.actor
+    project["lead_state_changed_at"] = now()
+    save(project)
+    log(event, project["project_id"], f"actor={args.actor}")
+    print(json.dumps(project, ensure_ascii=False, indent=2))
+
+
+def cmd_lead_select(args: argparse.Namespace) -> None:
+    cmd_lead_portfolio_state(args, state="selected", event="lead-selected")
+
+
+def cmd_lead_watch(args: argparse.Namespace) -> None:
+    cmd_lead_portfolio_state(args, state="watching", event="lead-watching")
+
+
 def cmd_page_status(args: argparse.Namespace) -> None:
     require_actor(args.actor, {MINH_ID, WIEN_ID})
     project = load(args.project_id)
@@ -591,6 +621,14 @@ def parser() -> argparse.ArgumentParser:
     lead_request_change.add_argument("note")
     lead_request_change.add_argument("--actor", required=True)
     lead_request_change.set_defaults(func=cmd_request_change)
+    lead_select = sub.add_parser("lead-select")
+    lead_select.add_argument("project_id")
+    lead_select.add_argument("--actor", required=True)
+    lead_select.set_defaults(func=cmd_lead_select)
+    lead_watch = sub.add_parser("lead-watch")
+    lead_watch.add_argument("project_id")
+    lead_watch.add_argument("--actor", required=True)
+    lead_watch.set_defaults(func=cmd_lead_watch)
     page_status = sub.add_parser("page-status")
     page_status.add_argument("project_id")
     page_status.add_argument("page_slug")

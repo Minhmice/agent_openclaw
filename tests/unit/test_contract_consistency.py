@@ -72,3 +72,31 @@ def test_discuss_discovery_contract_is_bounded_and_uses_canonical_runtime_paths(
     assert ("Do not fall back to" in docs or "must never fall back" in docs) and "web_search" in docs
     assert "return `no_candidate_defensible`" in docs
     assert "bounded" in docs.lower()
+
+
+def test_website_redesign_prompt_stack_is_role_scoped() -> None:
+    root = _repo_root()
+    shared = root / "agents/shared/contracts"
+    required = (
+        shared / "website-redesign-policy.md",
+        shared / "website-redesign-research.md",
+        shared / "website-redesign-design.md",
+        shared / "website-redesign-pm.md",
+        shared / "website-redesign-output-schema.md",
+    )
+
+    assert all(path.is_file() for path in required)
+    assert len((root / "agents/shared/website-redesign-agent-spec.md").read_text(encoding="utf-8").splitlines()) < 200
+    assert "compatibility" in (root / "agents/shared/website-redesign-agent-spec.md").read_text(
+        encoding="utf-8"
+    ).lower()
+
+    role_routes = {
+        root / "agents/curie/README.md": "website-redesign-research.md",
+        root / "agents/website-brief/README.md": "website-redesign-design.md",
+        root / "agents/project-pm/README.md": "website-redesign-pm.md",
+    }
+    for readme, contract in role_routes.items():
+        content = readme.read_text(encoding="utf-8")
+        assert contract in content
+        assert "website-redesign-agent-spec.md" not in content

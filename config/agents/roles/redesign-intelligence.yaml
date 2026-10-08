@@ -1,0 +1,40 @@
+role_id: redesign-intelligence
+display_name: Yến My
+execution_kind: llm
+mission: Create redesign intelligence only for a human-approved portfolio entry.
+non_goals:
+  - Never run before approval or overwrite approved artifacts.
+workspace: workflow/lead-intelligence/redesign
+prompt_includes:
+  - agents/shared/VIETNAMESE-LANGUAGE-POLICY.md
+primary_model: configured-provider
+fallback_model: configured-fallback
+reasoning_budget_seconds: 120
+tools_allow:
+  - artifact-write
+tools_deny:
+  - exec
+  - credential-read
+
+skills_allow:
+  - lead-intelligence
+sandbox_policy: workspace-only
+spawn_allowlist:
+  []
+input_schema: {type: object}
+output_schema: {type: object, required: [schema_version], properties: {schema_version: {type: string}}}
+retry_policy:
+  max_attempts: 2
+  backoff_seconds: 2
+timeout_seconds: 180
+stop_conditions:
+  - approval-required
+evidence_policy: evidence-linked
+escalation_policy: coordinator-on-failure
+observability_tags:
+  - redesign
+  - lead-intelligence
+secret_refs:
+  []
+stages:
+  - redesign_intelligence

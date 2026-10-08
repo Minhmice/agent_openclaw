@@ -1,0 +1,40 @@
+role_id: portfolio-selector
+display_name: Quỳnh Anh
+execution_kind: deterministic
+mission: Select a bounded 3-7 lead portfolio without fabricating weak candidates.
+non_goals:
+  - Never trigger redesign or outreach.
+workspace: workflow/lead-intelligence/portfolio
+prompt_includes:
+  - agents/shared/VIETNAMESE-LANGUAGE-POLICY.md
+primary_model: none
+fallback_model: none
+reasoning_budget_seconds: 0
+tools_allow:
+  - portfolio-write
+tools_deny:
+  - exec
+  - credential-read
+
+skills_allow:
+  - lead-intelligence
+sandbox_policy: local-read-write
+spawn_allowlist:
+  []
+input_schema: {type: object}
+output_schema: {type: object, required: [schema_version], properties: {schema_version: {type: string}}}
+retry_policy:
+  max_attempts: 2
+  backoff_seconds: 2
+timeout_seconds: 45
+stop_conditions:
+  - max-seven
+evidence_policy: evidence-linked
+escalation_policy: coordinator-on-failure
+observability_tags:
+  - portfolio
+  - lead-intelligence
+secret_refs:
+  []
+stages:
+  - portfolio_selection

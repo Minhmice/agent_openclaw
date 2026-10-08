@@ -32,6 +32,22 @@ Các lệnh kiểm tra không gửi Discord và không crawl Internet khi chạy
 
 Fixture E2E dùng HTTP server local và fake provider/transport; không đặt API key hoặc token vào fixture. Artifact của một project nằm dưới `<artifact-root>/<project_id>/` và gồm candidate/evidence/pages/scores/issues, dossier, `curie-to-website.json`, Website Brief, renderer proof và delivery snapshot.
 
+## Discovery provider công khai
+
+Production composition dùng hai nguồn OSM theo thứ tự: `openstreetmap-overpass` là nguồn chính và
+`openstreetmap-nominatim` là fallback bounded. Nominatim chỉ gửi một truy vấn `company, <center>`
+trong mỗi process, cache kết quả trong process, lấy tối đa 40 kết quả có `website` hoặc
+`contact:website` public, và chỉ gán các kết quả không có bằng chứng cohort vào `other`. Nguồn này
+không dùng grid search, không tự tải trang details, không làm geocoding hàng loạt, và không bypass
+geofence/evidence/scoring gate.
+
+Fallback phải giữ `User-Agent` nhận diện ứng dụng, cách nhau ít nhất một giây, và giữ tần suất theo
+chính sách Nominatim; endpoint có thể chuyển qua `OPENCLAW_WEB_NOMINATIM_ENDPOINT` nếu host cần
+đổi dịch vụ. Xem [Nominatim Usage Policy](https://operations.osmfoundation.org/policies/nominatim/)
+và [Search API](https://nominatim.org/release-docs/latest/api/Search/) trước khi tăng tần suất hoặc
+mở rộng truy vấn. Nếu provider trả payload lỗi, lỗi đó vẫn được ghi nhận là provider failure; không
+được đổi thành `no-candidate-defensible` hay tự tổng hợp candidate.
+
 ## Luồng trạng thái và gate
 
 ```text

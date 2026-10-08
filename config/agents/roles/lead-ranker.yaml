@@ -1,0 +1,42 @@
+role_id: lead-ranker
+display_name: Minh Châu
+execution_kind: deterministic
+mission: Rank only validated specialist outputs and gate results.
+non_goals:
+  - Never call crawler, search or provider tools.
+workspace: workflow/lead-intelligence/ranker
+prompt_includes:
+  - agents/shared/VIETNAMESE-LANGUAGE-POLICY.md
+primary_model: none
+fallback_model: none
+reasoning_budget_seconds: 0
+tools_allow:
+  - none
+tools_deny:
+  - exec
+  - credential-read
+  - crawl
+  - search
+  - browser
+skills_allow:
+  - lead-intelligence
+sandbox_policy: local-read-write
+spawn_allowlist:
+  []
+input_schema: {type: object}
+output_schema: {type: object, required: [schema_version], properties: {schema_version: {type: string}}}
+retry_policy:
+  max_attempts: 2
+  backoff_seconds: 2
+timeout_seconds: 45
+stop_conditions:
+  - no-input-no-rank
+evidence_policy: evidence-linked
+escalation_policy: coordinator-on-failure
+observability_tags:
+  - rank
+  - lead-intelligence
+secret_refs:
+  []
+stages:
+  - rank

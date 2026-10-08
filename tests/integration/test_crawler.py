@@ -7,7 +7,7 @@ from collections.abc import Iterable
 import httpx
 import pytest
 
-from openclaw_web.crawl.service import CrawlLimits, WebsiteCrawler
+from openclaw_web.crawl.service import CrawlFailure, CrawlLimits, WebsiteCrawler
 
 PUBLIC_IP = "93.184.216.34"
 
@@ -842,4 +842,30 @@ async def test_crawler_propagates_transport_cancellation() -> None:
     with pytest.raises(asyncio.CancelledError):
         await crawler.crawl("https://example.com/")
 
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_crawler_preserves_http_status_for_failed_page() -> None:
+    requests: list[str] = []
+    client = client_for(
+        {
+            "https://example.com/robots.txt": httpx.Response(404),
+            "https://example.com/": html("<html><body><a href='/missing'>Missing</a></body></html>"),
+            "https://example.com/missing": httpx.Response(404, text="missing"),
+        },
+        requests,
+    )
+    crawler = WebsiteCrawler(client=client, resolver=public_resolver)
+
+    result = await crawler.crawl("https://example.com/")
+
+    assert result.failures == (
+        CrawlFailure(
+            "https://example.com/missing",
+            "page returned non-success status",
+            status_code=404,
+        ),
+    )
+    assert "https://example.com/missing" in requests
     await client.aclose()

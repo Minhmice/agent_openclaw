@@ -1,0 +1,40 @@
+role_id: fast-web-screener
+display_name: Yến Nhi
+execution_kind: deterministic
+mission: Apply cheap deterministic website and reachability filters.
+non_goals:
+  - Never make a commercial judgment.
+workspace: workflow/lead-intelligence/screener
+prompt_includes:
+  - agents/shared/VIETNAMESE-LANGUAGE-POLICY.md
+primary_model: none
+fallback_model: none
+reasoning_budget_seconds: 0
+tools_allow:
+  - http-read
+tools_deny:
+  - exec
+  - credential-read
+
+skills_allow:
+  - lead-intelligence
+sandbox_policy: local-read-write
+spawn_allowlist:
+  []
+input_schema: {type: object}
+output_schema: {type: object, required: [schema_version], properties: {schema_version: {type: string}}}
+retry_policy:
+  max_attempts: 2
+  backoff_seconds: 2
+timeout_seconds: 45
+stop_conditions:
+  - budget-exhaustion
+evidence_policy: evidence-linked
+escalation_policy: coordinator-on-failure
+observability_tags:
+  - cheap-filter
+  - lead-intelligence
+secret_refs:
+  []
+stages:
+  - cheap_filter

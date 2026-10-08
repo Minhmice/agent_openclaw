@@ -1,6 +1,7 @@
 """Command-line contract for the website discovery and audit workflow."""
 
 import json
+import os
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -269,3 +270,80 @@ def component_callback(
         typer.echo("Khong the xu ly component callback.", err=True)
         raise typer.Exit(code=2) from exc
     _emit(result, json_output=True)
+
+
+@app.command(
+    "dashboard-serve",
+    help="Chay dashboard loopback de theo doi va dieu phoi workflow.",
+)
+def dashboard_serve(
+    host: Annotated[
+        str | None,
+        typer.Option("--host", help="Mac dinh 127.0.0.1; chi cho phep loopback."),
+    ] = None,
+    port: Annotated[int | None, typer.Option("--port", help="Mac dinh 18080.")] = None,
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db-path", help="SQLite state database hien co."),
+    ] = None,
+    dashboard_root: Annotated[
+        Path | None,
+        typer.Option("--dashboard-root", help="Thu muc static dashboard."),
+    ] = None,
+) -> None:
+    """Serve the dashboard without migrating or creating the workflow database."""
+
+    from openclaw_web.dashboard.auth import TokenAuthenticator
+    from openclaw_web.dashboard.server import DashboardServer
+    from openclaw_web.delivery.workflow_adapter import WorkflowCoordinatorAdapter
+    from openclaw_web.runtime_support import state_db, workflow_root
+
+    configured_host = host or os.environ.get("OPENCLAW_WEB_DASHBOARD_HOST", "127.0.0.1")
+    configured_port = port
+    if configured_port is None:
+        raw_port = os.environ.get("OPENCLAW_WEB_DASHBOARD_PORT", "18080")
+        try:
+            configured_port = int(raw_port)
+        except ValueError as exc:
+            typer.echo("OPENCLAW_WEB_DASHBOARD_PORT khong hop le.", err=True)
+            raise typer.Exit(code=2) from exc
+    database = db_path or Path(os.environ.get("OPENCLAW_WEB_STATE_DB", str(state_db())))
+    asset_root = Path(
+        os.environ.get("OPENCLAW_WEB_ARTIFACT_ROOT", str(database.parent / "artifacts"))
+    )
+    static_root = dashboard_root
+    if static_root is None:
+        configured_root = os.environ.get("OPENCLAW_WEB_DASHBOARD_ROOT", "")
+        static_root = Path(configured_root) if configured_root else None
+    coordinator_path = Path(
+        os.environ.get(
+            "OPENCLAW_WEB_COORDINATOR_PATH",
+            str(workflow_root() / "workflow-coordinator.py"),
+        )
+    )
+    coordinator = (
+        WorkflowCoordinatorAdapter(coordinator_path)
+        if coordinator_path.is_file()
+        else None
+    )
+    try:
+        server = DashboardServer(
+            db_path=database,
+            host=configured_host,
+            port=configured_port,
+            dashboard_root=static_root,
+            asset_root=asset_root,
+            authenticator=TokenAuthenticator.from_environment(),
+            coordinator=coordinator,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"Khong khoi dong duoc dashboard: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    try:
+        typer.echo(f"Dashboard listening on {server.host}:{server.server_address[1]}")
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+        server.server_close()

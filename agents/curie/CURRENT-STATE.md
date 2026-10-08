@@ -6,7 +6,8 @@
 - Repository path: `C:\Users\minhmice\Documents\projects\agent_openclaw`
 - Git branch at handoff: `main`
 - Remote branch at handoff: `origin/main`
-- Repository nature: documentation-first runbook; no lead-mining engine exists yet.
+- Repository nature: documentation-first runbook plus the bounded `openclaw-web` discovery/audit
+  implementation under `src/openclaw_web/`, with a deployable release path under `deploy/`.
 - Root runbook: [README.md](../../README.md)
 - Root agent rules: [AGENTS.md](../../AGENTS.md)
 
@@ -28,7 +29,8 @@ The previous agent checked that none of these variables were present in its own 
 
 ## Remote OpenClaw last-known baseline
 
-The last read-only audit was performed on 2026-08-03. It is historical and must be rechecked before relying on it.
+The last documented baseline below is historical and must be rechecked before relying on it. The
+live acceptance work on 2026-08-26 rechecked the host before any deployment.
 
 - Host: `100.121.246.38`
 - SSH user: `minhmice`
@@ -54,4 +56,6 @@ Security audit warnings included:
 4. Unpinned Discord plugin npm spec.
 5. Deep probe missing `operator.read` scope.
 
-No remote changes were authorized or made as part of this handoff.
+The live acceptance work keeps the discovery timer disabled until the real Discord approval gate
+passes. Remote state, credentials, artifacts, and component callbacks remain source-of-truth data
+and must be inspected only through redacted checks.

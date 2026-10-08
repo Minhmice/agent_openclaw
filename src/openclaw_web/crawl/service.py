@@ -135,6 +135,15 @@ class CrawlFailure:
 
     url: str
     reason: str
+    status_code: int | None = None
+
+
+class _NonSuccessStatus(ValueError):
+    """Internal page-fetch error retaining an observed HTTP status."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__("page returned non-success status")
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,7 +388,7 @@ class WebsiteCrawler:
             policy_loader=policy_loader,
         )
         if not 200 <= response.status_code < 300:
-            raise ValueError("page returned non-success status")
+            raise _NonSuccessStatus(response.status_code)
         media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().casefold()
         if media_type not in _HTML_MEDIA_TYPES:
             raise ValueError("unsupported page content type")
@@ -450,6 +459,15 @@ class WebsiteCrawler:
                 raise
             except (TimeoutError, httpx.HTTPError, UnsafeTarget):
                 failures.append(CrawlFailure(_failure_url(url), "page fetch failed"))
+                continue
+            except _NonSuccessStatus as error:
+                failures.append(
+                    CrawlFailure(
+                        _failure_url(url),
+                        "page returned non-success status",
+                        status_code=error.status_code,
+                    )
+                )
                 continue
             except ValueError as error:
                 reason = str(error)

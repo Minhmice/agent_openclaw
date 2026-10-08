@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -18,6 +18,7 @@ Clock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
 AsyncSleeper = Callable[[float], Awaitable[None]]
 StatusHandler = Callable[[httpx.Response], None]
+QueryParam = str | int | float | bool | None | Sequence[str | int | float | bool | None]
 
 _MAX_JSON_DEPTH = 64
 _MAX_RESPONSE_BYTES = 5_000_000
@@ -151,7 +152,8 @@ async def request_json(
     url: str,
     *,
     headers: dict[str, str],
-    payload: object,
+    payload: object | None,
+    params: Mapping[str, QueryParam] | None = None,
     timeout: httpx.Timeout,
     max_response_bytes: int,
     status_handler: StatusHandler,
@@ -161,7 +163,12 @@ async def request_json(
     limit = response_byte_limit(max_response_bytes)
     try:
         async with client.stream(
-            method, url, headers=headers, json=payload, timeout=timeout
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json=payload,
+            timeout=timeout,
         ) as response:
             status_handler(response)
             media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()

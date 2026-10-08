@@ -39,6 +39,8 @@ class WorkflowCoordinatorAdapter:
         reason: str | None = None,
     ) -> CoordinatorCommand:
         command = {
+            "select-lead": "lead-select",
+            "watch-lead": "lead-watch",
             "approve": "lead-approve",
             "reject": "lead-reject",
             "request-changes": "lead-request-change",

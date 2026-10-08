@@ -98,7 +98,9 @@ def _parse_location(path: str | os.PathLike[str]) -> _DatabaseLocation:
     )
 
 
-def connect(path: str | os.PathLike[str]) -> sqlite3.Connection:
+def connect(
+    path: str | os.PathLike[str], *, check_same_thread: bool = True
+) -> sqlite3.Connection:
     """Open a configured autocommit connection for explicit repository transactions.
 
     The caller owns the returned connection and must call ``close()``. Use
@@ -114,6 +116,7 @@ def connect(path: str | os.PathLike[str]) -> sqlite3.Connection:
         timeout=5.0,
         isolation_level=None,
         uri=location.is_uri,
+        check_same_thread=check_same_thread,
     )
     try:
         connection.row_factory = sqlite3.Row

@@ -1,0 +1,48 @@
+schema_version: lead-intelligence.topology.v1
+stage_flow:
+  - define_market
+  - discover
+  - resolve_entities
+  - cheap_filter
+  - business_fit
+  - agency_fit
+  - digital_gap
+  - deep_audit
+  - commercial_opportunity
+  - dealability
+  - evidence_verification
+  - red_team
+  - score_survivors
+  - rank
+  - portfolio_selection
+  - human_approval
+  - redesign_intelligence
+redesign_stage_flow:
+  - business_truth
+  - content_inventory
+  - visual_dna
+  - keep_evolve_retire
+  - redesign_mode
+  - design_direction
+  - prototype
+  - design_system
+  - page_blueprints
+roles:
+  - orchestrator
+  - market-intelligence
+  - discovery-scout
+  - entity-resolver
+  - business-strength
+  - agency-fit
+  - fast-web-screener
+  - technical-auditor
+  - ux-conversion-auditor
+  - commercial-opportunity
+  - dealability
+  - evidence-verifier
+  - red-team
+  - lead-ranker
+  - portfolio-selector
+  - dossier-writer
+  - redesign-intelligence
+

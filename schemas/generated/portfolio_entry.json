@@ -1,0 +1,219 @@
+{
+  "$defs": {
+    "PortfolioEntryState": {
+      "enum": [
+        "ranked",
+        "selected",
+        "watching",
+        "rejected",
+        "awaiting-command",
+        "approved",
+        "in-progress",
+        "completed"
+      ],
+      "title": "PortfolioEntryState",
+      "type": "string"
+    },
+    "RedTeamVerdict": {
+      "enum": [
+        "survive",
+        "downgrade",
+        "reject"
+      ],
+      "title": "RedTeamVerdict",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A bounded portfolio item waiting for an explicit human command.",
+  "properties": {
+    "agency_fit": {
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Agency Fit",
+      "type": "number"
+    },
+    "business_strength": {
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Business Strength",
+      "type": "number"
+    },
+    "candidate_id": {
+      "minLength": 1,
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "commercial_opportunity": {
+      "default": 0,
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Commercial Opportunity",
+      "type": "number"
+    },
+    "company_name": {
+      "minLength": 1,
+      "title": "Company Name",
+      "type": "string"
+    },
+    "conversion_gap": {
+      "default": 0,
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Conversion Gap",
+      "type": "number"
+    },
+    "dealability": {
+      "default": 0,
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Dealability",
+      "type": "number"
+    },
+    "digital_gap": {
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Digital Gap",
+      "type": "number"
+    },
+    "entry_id": {
+      "minLength": 1,
+      "title": "Entry Id",
+      "type": "string"
+    },
+    "evidence_confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Evidence Confidence",
+      "type": "number"
+    },
+    "next_action": {
+      "default": "human-approval",
+      "minLength": 1,
+      "title": "Next Action",
+      "type": "string"
+    },
+    "portfolio_id": {
+      "minLength": 1,
+      "title": "Portfolio Id",
+      "type": "string"
+    },
+    "project_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Project Id"
+    },
+    "public_contact": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Public Contact"
+    },
+    "rank": {
+      "maximum": 7,
+      "minimum": 1,
+      "title": "Rank",
+      "type": "integer"
+    },
+    "red_team_verdict": {
+      "$ref": "#/$defs/RedTeamVerdict"
+    },
+    "schema_version": {
+      "default": "lead-intelligence.contracts.v1",
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "screenshot_asset": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Screenshot Asset"
+    },
+    "state": {
+      "$ref": "#/$defs/PortfolioEntryState",
+      "default": "ranked"
+    },
+    "state_version": {
+      "default": 0,
+      "minimum": 0,
+      "title": "State Version",
+      "type": "integer"
+    },
+    "top_issues": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Top Issues",
+      "type": "array"
+    },
+    "trust_gap": {
+      "default": 0,
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Trust Gap",
+      "type": "number"
+    },
+    "ux_gap": {
+      "default": 0,
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Ux Gap",
+      "type": "number"
+    },
+    "website_url": {
+      "anyOf": [
+        {
+          "format": "uri",
+          "minLength": 1,
+          "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://(?:(?:%[0-9A-Fa-f]{2}|[^%\\s\\\\/?#@])*@)?(?:\\[(?:(?:[0-9A-Fa-f]{1,4}:){6}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|::(?:[0-9A-Fa-f]{1,4}:){5}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){4}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,1}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){3}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,2}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){2}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,3}[0-9A-Fa-f]{1,4})?::[0-9A-Fa-f]{1,4}:(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,4}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,5}[0-9A-Fa-f]{1,4})?::[0-9A-Fa-f]{1,4}|(?:(?:[0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4})?::)\\]|(?:%[0-9A-Fa-f]{2}|[^%\\s\\\\/?#:@\\[\\]])+)(?::0*(?:0|[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:[/?#](?:%[0-9A-Fa-f]{2}|[^%\\s\\\\])*)?(?![\\s\\S])",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Website Url"
+    }
+  },
+  "required": [
+    "entry_id",
+    "portfolio_id",
+    "candidate_id",
+    "rank",
+    "company_name",
+    "business_strength",
+    "agency_fit",
+    "digital_gap",
+    "evidence_confidence",
+    "red_team_verdict"
+  ],
+  "title": "PortfolioEntry",
+  "type": "object"
+}

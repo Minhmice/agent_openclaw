@@ -268,7 +268,76 @@ _MIGRATION_3 = Migration(
     ),
 )
 
-_MIGRATIONS = (_MIGRATION_1, _MIGRATION_2, _MIGRATION_3)
+_MIGRATION_4 = Migration(
+    version=4,
+    statements=(
+        """
+        CREATE TABLE portfolios (
+            portfolio_id TEXT PRIMARY KEY CHECK (length(portfolio_id) > 0),
+            run_id TEXT,
+            status TEXT NOT NULL CHECK (length(status) > 0),
+            target INTEGER NOT NULL CHECK (target BETWEEN 3 AND 7),
+            maximum INTEGER NOT NULL CHECK (maximum BETWEEN target AND 7),
+            state_version INTEGER NOT NULL DEFAULT 0 CHECK (state_version >= 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL
+                CHECK (json_valid(snapshot_json) AND json_type(snapshot_json) = 'object'),
+            FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE RESTRICT
+        )
+        """,
+        "CREATE UNIQUE INDEX ux_portfolios_run_id ON portfolios (run_id) WHERE run_id IS NOT NULL",
+        """
+        CREATE TABLE portfolio_entries (
+            entry_id TEXT PRIMARY KEY CHECK (length(entry_id) > 0),
+            portfolio_id TEXT NOT NULL,
+            candidate_id TEXT NOT NULL CHECK (length(candidate_id) > 0),
+            rank INTEGER NOT NULL CHECK (rank BETWEEN 1 AND 7),
+            state TEXT NOT NULL CHECK (length(state) > 0),
+            state_version INTEGER NOT NULL DEFAULT 0 CHECK (state_version >= 0),
+            snapshot_json TEXT NOT NULL
+                CHECK (json_valid(snapshot_json) AND json_type(snapshot_json) = 'object'),
+            FOREIGN KEY (portfolio_id) REFERENCES portfolios(portfolio_id) ON DELETE RESTRICT,
+            UNIQUE (portfolio_id, candidate_id)
+        )
+        """,
+        "CREATE INDEX ix_portfolio_entries_portfolio_id ON portfolio_entries (portfolio_id, rank)",
+        """
+        CREATE TABLE portfolio_deliveries (
+            portfolio_id TEXT PRIMARY KEY,
+            delivery_id TEXT NOT NULL CHECK (length(delivery_id) > 0),
+            idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) > 0),
+            status TEXT NOT NULL CHECK (length(status) > 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL
+                CHECK (json_valid(snapshot_json) AND json_type(snapshot_json) = 'object'),
+            FOREIGN KEY (portfolio_id) REFERENCES portfolios(portfolio_id) ON DELETE RESTRICT,
+            UNIQUE (delivery_id),
+            UNIQUE (idempotency_key)
+        )
+        """,
+        """
+        CREATE TABLE dashboard_action_receipts (
+            idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) > 0),
+            action TEXT NOT NULL CHECK (length(action) > 0),
+            target_id TEXT NOT NULL CHECK (length(target_id) > 0),
+            actor_id TEXT NOT NULL CHECK (length(actor_id) > 0),
+            expected_state_version INTEGER NOT NULL CHECK (expected_state_version >= 0),
+            status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed')),
+            event_id TEXT,
+            response_json TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (response_json IS NULL OR (json_valid(response_json) AND json_type(response_json) = 'object'))
+        )
+        """,
+        "CREATE INDEX ix_dashboard_action_receipts_target ON dashboard_action_receipts (target_id, created_at)",
+    ),
+)
+
+_MIGRATIONS = (_MIGRATION_1, _MIGRATION_2, _MIGRATION_3, _MIGRATION_4)
 
 
 def _utc_text(value: datetime) -> str:

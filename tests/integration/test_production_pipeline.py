@@ -10,10 +10,15 @@ import httpx
 import pytest
 from pydantic import AnyHttpUrl
 
-from openclaw_web.audit.builtin import AuditFinding, BuiltinAuditResult
+from openclaw_web.audit.builtin import (
+    AuditFinding,
+    BuiltinAuditResult,
+    ResourceObservation,
+    audit_page,
+)
 from openclaw_web.audit.lighthouse import LighthouseMetrics, LighthouseRunResult
 from openclaw_web.crawl.extract import ExtractedPage
-from openclaw_web.crawl.service import CrawlResult, WebsiteCrawler
+from openclaw_web.crawl.service import CrawlFailure, CrawlResult, WebsiteCrawler
 from openclaw_web.db.connection import connect
 from openclaw_web.db.migrations import migrate
 from openclaw_web.db.repository import Repository
@@ -287,6 +292,71 @@ async def test_production_run_posts_one_defensible_candidate_idempotently(tmp_pa
     assert not any(ord(character) in {0xC3, 0xC4, 0xC6, 0xFFFD} for character in dossier)
     assert next(iter(deliveries.deliveries.values())).payload_path == str(
         project_dir / "review-card.json"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_production_audit_receives_observed_crawl_link_statuses(tmp_path: Path) -> None:
+    database = connect(tmp_path / "state.sqlite")
+    migrate(database)
+    repository = Repository(database)
+    provider = _Provider(
+        "provider",
+        {"manufacturer": (_seed("https://resource-observed.com/", "Observed"),)},
+    )
+    page = ExtractedPage(
+        "https://resource-observed.com/",
+        "Observed",
+        "A site",
+        (),
+        (),
+        (),
+        ("https://resource-observed.com/missing",),
+        (),
+    )
+    seen: list[object] = []
+
+    async def crawl(_url: str) -> CrawlResult:
+        return CrawlResult(
+            page.url,
+            (page,),
+            (
+                CrawlFailure(
+                    "https://resource-observed.com/missing",
+                    "page returned non-success status",
+                    status_code=404,
+                ),
+            ),
+            False,
+        )
+
+    def audit(observation: object) -> BuiltinAuditResult:
+        seen.append(observation)
+        return audit_page(observation)  # type: ignore[arg-type]
+
+    pipeline = ProductionPipeline(
+        repository=repository,
+        artifact_root=(tmp_path / "artifacts").resolve(),
+        market=MARKET.model_copy(update={"industries": ["manufacturer"]}),
+        providers=(provider,),
+        crawler=crawl,
+        rubric=RUBRIC,
+        review_channel="review-channel",
+        clock=lambda: NOW,
+        project_sink=_ProjectSink(),
+        delivery_sink=_DeliverySink(),
+        audit=audit,
+    )
+    try:
+        result = await pipeline.run()
+    finally:
+        repository.close()
+
+    assert result.status == "candidate-posted"
+    assert len(seen) == 1
+    assert seen[0].resources == (
+        ResourceObservation("link", "https://resource-observed.com/missing", 404),
     )
 
 

@@ -401,7 +401,10 @@ def test_runtime_uses_overpass_default_without_optional_provider_keys(
     composition = ProductionDiscoveryComposition.from_environment()
 
     assert composition.readiness() == "ready"
-    assert [provider.name for provider in composition.providers] == ["openstreetmap-overpass"]
+    assert [provider.name for provider in composition.providers] == [
+        "openstreetmap-overpass",
+        "openstreetmap-nominatim",
+    ]
 
 
 def test_production_composition_includes_overpass_without_optional_api_keys(
@@ -428,7 +431,10 @@ def test_production_composition_includes_overpass_without_optional_api_keys(
 
     composition = ProductionDiscoveryComposition.from_environment()
 
-    assert [provider.name for provider in composition.providers] == ["openstreetmap-overpass"]
+    assert [provider.name for provider in composition.providers] == [
+        "openstreetmap-overpass",
+        "openstreetmap-nominatim",
+    ]
     assert composition.readiness() == "review_channel_not_configured"
 
 
@@ -469,6 +475,7 @@ def test_configured_provider_fails_closed_until_full_chain_is_composed(
     assert composition.readiness() == "ready"
     assert [provider.name for provider in composition.providers] == [
         "openstreetmap-overpass",
+        "openstreetmap-nominatim",
         "serper",
     ]
 

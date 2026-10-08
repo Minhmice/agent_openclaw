@@ -1,0 +1,41 @@
+role_id: discovery-scout
+display_name: Gia Linh
+execution_kind: llm
+mission: Discover bounded candidate seeds from approved providers.
+non_goals:
+  - Never qualify, rank or infer buyer intent.
+workspace: workflow/lead-intelligence/discovery
+prompt_includes:
+  - agents/shared/VIETNAMESE-LANGUAGE-POLICY.md
+primary_model: configured-provider
+fallback_model: configured-fallback
+reasoning_budget_seconds: 120
+tools_allow:
+  - discovery-provider
+tools_deny:
+  - exec
+  - credential-read
+
+skills_allow:
+  - lead-intelligence
+sandbox_policy: workspace-only
+spawn_allowlist:
+  []
+input_schema: {type: object}
+output_schema: {type: object, required: [schema_version], properties: {schema_version: {type: string}}}
+retry_policy:
+  max_attempts: 2
+  backoff_seconds: 2
+timeout_seconds: 180
+stop_conditions:
+  - bounded-provider-calls
+evidence_policy: evidence-linked
+escalation_policy: coordinator-on-failure
+observability_tags:
+  - discovery
+  - lead-intelligence
+secret_refs:
+  - SERPER_API_KEY
+  - GOOGLE_PLACES_API_KEY
+stages:
+  - discover

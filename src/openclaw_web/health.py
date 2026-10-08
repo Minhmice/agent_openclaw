@@ -68,7 +68,7 @@ class HealthSettings:
             value = os.environ.get(name)
             return Path(value).expanduser() if value else default.resolve()
 
-        providers = ("openstreetmap-overpass",) + tuple(
+        providers = ("openstreetmap-overpass", "openstreetmap-nominatim") + tuple(
             name
             for name, variable in (
                 ("google-places", "GOOGLE_PLACES_API_KEY"),

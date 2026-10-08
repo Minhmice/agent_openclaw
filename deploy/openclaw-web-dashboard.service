@@ -1,0 +1,20 @@
+[Unit]
+Description=OpenClaw Web Lead Intelligence Dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/openclaw-web/env
+EnvironmentFile=-%h/.config/openclaw-web/dashboard.env
+ExecStart=/usr/bin/env openclaw-web dashboard-serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+# The application rejects non-loopback binds as a second safety boundary.
+Environment=OPENCLAW_WEB_DASHBOARD_HOST=127.0.0.1
+Environment=OPENCLAW_WEB_DASHBOARD_PORT=18080
+
+[Install]
+WantedBy=default.target

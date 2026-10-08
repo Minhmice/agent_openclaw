@@ -13,11 +13,11 @@ fi
 ssh_args=(-p "$port")
 
 if [[ -n "${OPENCLAW_SSH_KEY:-}" ]]; then
-    if [[ ! -f "$OPENCLAW_SSH_KEY" ]]; then
-        printf 'OPENCLAW_SSH_KEY does not point to a file: %s\n' "$OPENCLAW_SSH_KEY" >&2
-        exit 2
+    if [[ -f "$OPENCLAW_SSH_KEY" ]]; then
+        ssh_args+=(-i "$OPENCLAW_SSH_KEY")
+    else
+        printf '%s\n' 'OPENCLAW_SSH_KEY is unavailable; continuing without an explicit key.' >&2
     fi
-    ssh_args+=(-i "$OPENCLAW_SSH_KEY")
 fi
 
 ssh_args+=("${OPENCLAW_SSH_USER}@${OPENCLAW_SSH_HOST}")

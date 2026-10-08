@@ -19,3 +19,8 @@ Thumbs.db
 *.log
 __pycache__/
 dist/
+.playwright-mcp/
+
+# Generated architecture graphs and local rollback/archive bundles
+build/
+graphify-out/

@@ -28,6 +28,8 @@ OPENCLAW_SSH_KEY=<path supplied by the agent environment>
 
 `OPENCLAW_SSH_PASSWORD` may be supplied to an agent's programmatic SSH integration through its secret provider, but the included native OpenSSH wrappers deliberately do not read or pass that variable. They use an SSH key/agent first and otherwise let OpenSSH prompt interactively. This keeps the password out of process listings and shell history.
 
+If `OPENCLAW_SSH_KEY` is set to a stale or unavailable path, the wrappers report that condition and continue without an explicit identity file so SSH agent, default-key, or interactive password authentication can still take over.
+
 ### 2. Connect
 
 PowerShell:

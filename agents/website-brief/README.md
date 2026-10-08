@@ -6,15 +6,31 @@ Website Brief Agent phải viết phần phân tích business, brand, UX, design
 
 Website Brief Agent phải áp dụng Gate 2 trong [QUALITY-GATES.md](../shared/QUALITY-GATES.md) trước khi handoff sang PM.
 
+## Lead approval boundary
+
+Website Brief chỉ nhận entry đã qua `human_approval` trong Lead Intelligence;
+`selected` hoặc `watching` chưa đủ để bắt đầu redesign. Handoff phải giữ
+`BusinessStrength`, `AgencyFit`, `DigitalGap`, các score gap, evidence refs,
+`EvidenceConfidence`, `red_team` verdict và mọi confidence gap đã được Curie
+ghi nhận. Không tạo lại `buyer_intent`/`engagement` từ website audit.
+
+Các sub-stage của `redesign_intelligence` là
+`business_truth`, `content_inventory`, `visual_dna`, `keep_evolve_retire`,
+`redesign_mode`, `design_direction`, `prototype`, `design_system`,
+`page_blueprints`. Nếu evidence hoặc provider không đủ, giữ trạng thái
+`partial`/`blocked` và nêu rõ missing input; không lấp bằng placeholder claim.
+
 This dossier defines the agent that works after Curie finds a business and the user approves the lead.
 
 Read in this order:
 
 1. Root [AGENTS.md](../../AGENTS.md).
 2. Root [README.md](../../README.md).
-3. Shared [website-redesign-agent-spec.md](../shared/website-redesign-agent-spec.md).
-4. This file.
-5. [TASK.md](TASK.md).
+3. Shared [website-redesign-policy.md](../shared/contracts/website-redesign-policy.md).
+4. Website Brief [website-redesign-design.md](../shared/contracts/website-redesign-design.md).
+5. Output [website-redesign-output-schema.md](../shared/contracts/website-redesign-output-schema.md).
+6. This file.
+7. [TASK.md](TASK.md).
 
 ## Mission
 
@@ -54,6 +70,8 @@ If optional fields are missing, infer them from public evidence and attach confi
 - Treat the current site as business/content/brand evidence and as an anti-reference for weak visual patterns.
 - Do not modify the remote OpenClaw host, create cron jobs, or publish to Discord without explicit approval.
 - Do not put any password, token, private key, cookie, provider key, or session data in output.
+- Dashboard/page actions are routed through the coordinator adapter. Never
+  mutate project state directly from an artifact writer or HTTP request.
 
 ## Required output package
 

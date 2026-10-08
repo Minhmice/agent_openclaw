@@ -1,5 +1,37 @@
 # Curie Current Task
 
+## Current Lead Intelligence contract
+
+Curie is the discovery and evidence producer for the bounded 17-stage Lead
+Intelligence flow. The stage order is:
+
+```text
+define_market -> discover -> resolve_entities -> cheap_filter -> business_fit
+-> agency_fit -> digital_gap -> deep_audit -> commercial_opportunity -> dealability
+-> evidence_verification -> red_team -> score_survivors -> rank -> portfolio_selection
+-> human_approval -> redesign_intelligence
+```
+
+The qualification gate is:
+
+```text
+BusinessStrength >= 60
+AND AgencyFit >= 65
+AND DigitalGap >= 55
+```
+
+Keep all score dimensions and `EvidenceConfidence` separate. `Dealability`
+before outreach is an observable proxy only; never output `buyer_intent`,
+`engagement`, or another unobserved intent claim. `red_team` must return
+`survive`, `downgrade`, or `reject`, and rejected candidates never enter the
+portfolio.
+
+The portfolio target is 5 with a hard maximum of 7. Keep 3–4 survivors as-is;
+keep only defensible 1–2 with run status `partial`; return
+`no_candidate_defensible` when none survive. A selected lead remains waiting
+for human action. Curie never starts redesign without a coordinator-accepted
+human approval.
+
 ## Assignment
 
 Turn [IDEA.md](IDEA.md) into an implementation-ready product spec and phased plan for the lead-mining engine.
@@ -20,7 +52,18 @@ Before writing code:
 
 ## Current user-facing behavior
 
-The agent should ask one decision question at a time. The first unresolved question is the MVP market scope in [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
+The MVP market scope is decided and must not be asked again: `đa ngành`, `quanh Hà Nội`, market
+ID `hanoi-80km`. Continue with bounded discovery/audit implementation and ask only later unresolved
+product decisions one at a time when they affect the next phase.
+
+The current implementation lives under `src/openclaw_web/` and is deployed through `deploy/`; its
+production gate still requires public evidence, geofence, deterministic scoring, artifact persistence,
+and a real Discord review action before approval or timer enablement.
+
+The live product dashboard is a read projection over workflow state and a
+write-capable coordinator adapter. Dashboard actions use bearer-token actor
+mapping, state-version compare-and-swap, and idempotency receipts; they do not
+bypass the same review gates used by Discord commands.
 
 ## Hard constraints
 
@@ -30,3 +73,5 @@ The agent should ask one decision question at a time. The first unresolved quest
 - No remote OpenClaw modification until explicitly approved.
 - No password, token, key, cookie, provider secret, or session data in files or output.
 - No unsupported claims based only on the dated baseline.
+- Provider failure must produce an explicit partial/terminal result, never a
+  fabricated candidate used to fill a portfolio.

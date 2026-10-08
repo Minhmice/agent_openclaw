@@ -29,11 +29,11 @@ $sshArgs = @('-p', $port)
 
 if (-not [string]::IsNullOrWhiteSpace($env:OPENCLAW_SSH_KEY)) {
     $keyPath = [Environment]::ExpandEnvironmentVariables($env:OPENCLAW_SSH_KEY)
-    if (-not (Test-Path -LiteralPath $keyPath -PathType Leaf)) {
-        [Console]::Error.WriteLine("OPENCLAW_SSH_KEY does not point to a file: $keyPath")
-        exit 2
+    if (Test-Path -LiteralPath $keyPath -PathType Leaf) {
+        $sshArgs += @('-i', $keyPath)
+    } else {
+        [Console]::Error.WriteLine('OPENCLAW_SSH_KEY is unavailable; continuing without an explicit key.')
     }
-    $sshArgs += @('-i', $keyPath)
 }
 
 $sshArgs += "$userName@$hostName"
